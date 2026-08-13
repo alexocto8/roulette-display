@@ -218,8 +218,10 @@ def make_result_badge(diameter, fill, ring_tone, accent, shadow_alpha=110, gold_
     # saturada (a referência usa preto/vermelho/verde de verdade, não uma versão diluída/cinza);
     # o contraste contra o fundo escuro do app vem do bisel dourado, não mais de clarear o
     # preenchimento como a v1-v7 faziam pro "preto".
-    center_tone = _lerp(fill, (255, 255, 255), 0.22)
-    edge_tone = _lerp(fill, (0, 0, 0), 0.30)
+    # Sombreamento bem mais discreto que a v8 -- o centro estava clareando demais e o preto lia
+    # como cinza em vez de preto de verdade (pedido explícito do cliente pra corrigir).
+    center_tone = _lerp(fill, (255, 255, 255), 0.06)
+    edge_tone = _lerp(fill, (0, 0, 0), 0.22)
     fill_img = Image.new("RGBA", img.size, (0, 0, 0, 0))
     fd = ImageDraw.Draw(fill_img)
     steps = 28
@@ -235,7 +237,7 @@ def make_result_badge(diameter, fill, ring_tone, accent, shadow_alpha=110, gold_
     hd = ImageDraw.Draw(hl)
     hl_w, hl_h = r * 1.15, r * 0.55
     hd.ellipse([cx - hl_w / 2, cy - r * 0.78, cx + hl_w / 2, cy - r * 0.78 + hl_h],
-               fill=(255, 255, 255, 26))
+               fill=(255, 255, 255, 13))
     hl = hl.filter(ImageFilter.GaussianBlur(radius=diameter * 0.03 * SS))
     img.alpha_composite(hl)
 
