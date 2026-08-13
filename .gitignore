@@ -17,3 +17,4 @@ logs/*.log.*
 
 # Saída gerada por ferramentas de desenvolvimento (tools/) -- nunca dado de produção.
 tools/*.png
+tools/reveal_preview/
