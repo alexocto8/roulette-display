@@ -205,22 +205,15 @@ def make_result_badge(diameter, fill, ring_tone, accent, shadow_alpha=110, gold_
         img.alpha_composite(band)
 
         # 2.5 segundo anel, fino e brilhante, concêntrico, DENTRO do vão -- só no círculo
-        # principal (chips pequenos não têm espaço/necessidade pra um anel duplo). Um pequeno
-        # brilho pontual ("glint") simula reflexo de luz numa superfície polida.
+        # principal (chips pequenos não têm espaço/necessidade pra um anel duplo). O "glint"
+        # pontual branco que existia aqui foi removido -- ficava um borrão branco solto,
+        # deslocado do resto do bisel dourado, sem ler como reflexo (pedido explícito do
+        # cliente: "essa parte branca não tá nada a ver"). O arco de brilho ("sheen", acima) já
+        # dá o efeito de luz vindo de cima sem esse artefato.
         if double_ring:
             ImageDraw.Draw(img).ellipse(
                 [cx - ring1_r, cy - ring1_r, cx + ring1_r, cy + ring1_r],
                 outline=(255, 235, 190, 235), width=ring1_w)
-
-            glint = Image.new("RGBA", img.size, (0, 0, 0, 0))
-            glint_r = bezel_mid
-            glint_angle = math.radians(215)
-            gx = cx + math.cos(glint_angle) * glint_r
-            gy = cy + math.sin(glint_angle) * glint_r
-            gs = bw * 0.9
-            ImageDraw.Draw(glint).ellipse([gx - gs, gy - gs, gx + gs, gy + gs], fill=(255, 255, 255, 235))
-            glint = glint.filter(ImageFilter.GaussianBlur(radius=gs * 0.35))
-            img.alpha_composite(glint)
     else:
         ring_r = r + SS * 5
         ImageDraw.Draw(img).ellipse([cx - ring_r, cy - ring_r, cx + ring_r, cy + ring_r],
