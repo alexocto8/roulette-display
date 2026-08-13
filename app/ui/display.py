@@ -903,10 +903,13 @@ class RouletteDisplay:
 
         row_h = theme.px(148)
         rank_font = theme.font(31, bold=True)
-        num_font = theme.font(40, bold=True)
+        # Bolinha do número +50% (78 -> 117) e fonte no maior tamanho que ainda cabe dentro do
+        # círculo sem estourar a borda (testado com os piores casos "36"/"23"/"00" -- pedido
+        # explícito do cliente).
+        num_font = theme.font(98, bold=True)
         count_font = theme.font(47, bold=True)
         unit_font = theme.font(21, bold=True)
-        badge_d = theme.px(78)
+        badge_d = theme.px(117)
         inset = theme.px(24)
         number_chip_asset = {"black": "number_chip_black.png", "red": "number_chip_red.png", "green": "number_chip_green.png"}
 
@@ -1062,8 +1065,12 @@ class RouletteDisplay:
 
         lanes_top = y
         lanes_bottom = rect.bottom
-        d = theme.px(76)
-        row_h = int(d * 1.28)
+        hist_font = theme.font(98, bold=True)  # igual ao num_font de _draw_side_panel
+        chip_size = theme.px(117)  # igual ao badge_d de _draw_side_panel
+        # A altura da linha é derivada do próprio tamanho do chip (não mais de um `d` fixo
+        # separado) -- senão, ao aumentar o chip sem mexer aqui, linhas vizinhas do histórico
+        # passariam a se sobrepor verticalmente.
+        row_h = int(chip_size * 1.28)
         n_rows = max(1, (lanes_bottom - lanes_top) // row_h)
         visible = history[:n_rows]
 
@@ -1073,9 +1080,6 @@ class RouletteDisplay:
             fade_img = pygame.transform.rotate(fade_src, 90)
             for x in lane_x.values():
                 surface.blit(fade_img, (x - fade_img.get_width() // 2, lanes_top))
-
-        hist_font = theme.font(40, bold=True)  # igual ao num_font de _draw_side_panel
-        chip_size = theme.px(78)  # igual ao badge_d de _draw_side_panel
         node_r = theme.px(4)
         connector_w = theme.px(2)
         for i in range(n_rows):
