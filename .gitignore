@@ -14,3 +14,6 @@ data/exports/*
 logs/*.log
 logs/*.log.*
 .pytest_cache/
+
+# Saída gerada por ferramentas de desenvolvimento (tools/) -- nunca dado de produção.
+tools/*.png
