@@ -114,17 +114,17 @@ _SPLASH_CROSSFADE_MS = 420
 # novo depois). Undo (`DEL DEL`/`-` `ENTER`) continua funcionando normalmente durante a revelação,
 # só o registro de um giro NOVO é que fica bloqueado.
 _REVEAL_GLOBAL_FADE_MS = 300
-# Logo: 3s no total (entrada + estático + saída) -- pedido explícito, reduzido da rodada anterior
-# (era 11s). Zoom/fade mantêm os mesmos tempos já aprovados (0.4s/0.6s); só o "segura" encolheu
-# pra fechar em 3s.
-_REVEAL_LOGO_ZOOM_MS = 400
-_REVEAL_LOGO_HOLD_MS = 2000
-_REVEAL_LOGO_FADE_MS = 600
-_REVEAL_LOGO_END_MS = _REVEAL_LOGO_ZOOM_MS + _REVEAL_LOGO_HOLD_MS + _REVEAL_LOGO_FADE_MS  # 3 000
+# Logo: 1.5s no total (entrada + estático + saída) -- pedido explícito, reduzido da rodada
+# anterior (era 3s). As três fases mantêm a mesma proporção de antes (0.4/2.0/0.6), só escaladas
+# pela metade pra fechar em 1.5s.
+_REVEAL_LOGO_ZOOM_MS = 200
+_REVEAL_LOGO_HOLD_MS = 1000
+_REVEAL_LOGO_FADE_MS = 300
+_REVEAL_LOGO_END_MS = _REVEAL_LOGO_ZOOM_MS + _REVEAL_LOGO_HOLD_MS + _REVEAL_LOGO_FADE_MS  # 1 500
 _REVEAL_CONTENT_FADE_MS = 300
-_REVEAL_CONTENT_START_MS = _REVEAL_LOGO_END_MS + _REVEAL_CONTENT_FADE_MS  # 3 300
+_REVEAL_CONTENT_START_MS = _REVEAL_LOGO_END_MS + _REVEAL_CONTENT_FADE_MS  # 1 800
 _REVEAL_NUMBER_DISPLAY_MS = 5000  # era 8000 -- pedido explícito de reduzir
-_REVEAL_MS = _REVEAL_CONTENT_START_MS + _REVEAL_NUMBER_DISPLAY_MS  # 8 300 -- duração total
+_REVEAL_MS = _REVEAL_CONTENT_START_MS + _REVEAL_NUMBER_DISPLAY_MS  # 6 800 -- duração total
 _REVEAL_WHEEL_DECEL_MS = 2000  # a roleta só desacelera/para nos últimos 2s da animação inteira
 _REVEAL_WHEEL_DECEL_START_MS = _REVEAL_MS - _REVEAL_WHEEL_DECEL_MS
 _REVEAL_WHEEL_SPIN_DEG_S = 480.0  # rápido, ~1.3 voltas/segundo -- "igual a roleta do jogo"
