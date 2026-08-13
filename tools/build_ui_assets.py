@@ -258,6 +258,52 @@ def make_result_badge(diameter, fill, ring_tone, accent, shadow_alpha=110, gold_
     return _down(img, (canvas, canvas))
 
 
+def make_glow_ring_badge(diameter, fill, gold, shadow_alpha=110) -> Image.Image:
+    """Variante pro círculo da TELA DE REVELAÇÃO (print de referência do cliente): anel dourado
+    FINO (não o bisel grosso do `make_result_badge`) com um halo/glow suave e largo ao redor --
+    diferente do `make_simple_chip` (anel fino sem glow nenhum) e do `make_result_badge`
+    (bisel grosso com halo). Aqui o número final é desenhado bem maior que o próprio círculo (ver
+    `mockup_reveal_animation.py`), então o "acabamento" precisa vir só do anel/glow, sem um bisel
+    espesso competindo com o número em cima."""
+    pad = int(diameter * 0.40)
+    canvas = diameter + pad * 2
+    img = Image.new("RGBA", (canvas * SS, canvas * SS), (0, 0, 0, 0))
+    cx = cy = canvas * SS / 2
+    r = diameter * SS / 2
+
+    shadow = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    ImageDraw.Draw(shadow).ellipse([cx - r, cy - r + SS * 3, cx + r, cy + r + SS * 3],
+                                    fill=(0, 0, 0, shadow_alpha))
+    shadow = shadow.filter(ImageFilter.GaussianBlur(radius=diameter * 0.05 * SS))
+    img.alpha_composite(shadow)
+
+    # halo largo e suave em volta do anel -- bem mais largo/borrado que o halo do bisel grosso,
+    # já que aqui ELE é o acabamento principal (sem bisel espesso por baixo pra dar corpo).
+    halo = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    halo_r = r + SS * 6
+    ImageDraw.Draw(halo).ellipse([cx - halo_r, cy - halo_r, cx + halo_r, cy + halo_r],
+                                  outline=(*gold, 235), width=int(SS * 20))
+    halo = halo.filter(ImageFilter.GaussianBlur(radius=diameter * 0.09 * SS))
+    img.alpha_composite(halo)
+
+    center_tone = _lerp(fill, (255, 255, 255), 0.06)
+    edge_tone = _lerp(fill, (0, 0, 0), 0.22)
+    fill_img = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    fd = ImageDraw.Draw(fill_img)
+    steps = 28
+    for i in range(steps, 0, -1):
+        t = i / steps
+        rr = r * t
+        color = _lerp(edge_tone, center_tone, 1 - t)
+        fd.ellipse([cx - rr, cy - rr, cx + rr, cy + rr], fill=(*color, 255))
+    img.alpha_composite(fill_img)
+
+    ring_w = max(1, int(SS * 2.4))
+    ImageDraw.Draw(img).ellipse([cx - r, cy - r, cx + r, cy + r], outline=(*gold, 255), width=ring_w)
+
+    return _down(img, (canvas, canvas))
+
+
 # -- barras/linhas de accent com gradiente (transparente -> cor -> vivo -> cor -> transparente) --
 
 def make_accent_bar(width, height, dark, vivid) -> Image.Image:
@@ -413,6 +459,12 @@ def main() -> None:
     make_result_badge(380, fill=TRUE_BLACK, ring_tone=TRUE_BLACK, accent=GOLD, gold_halo=True, double_ring=True).save(OUT_DIR / "result_badge_black.png")
     make_result_badge(380, fill=GREEN, ring_tone=GREEN, accent=GOLD, gold_halo=True, double_ring=True).save(OUT_DIR / "result_badge_green.png")
 
+    # Variante de anel fino + glow largo, só pra tela de revelação (print de referência do
+    # cliente) -- o número ali é desenhado bem maior que o bisel grosso comportaria.
+    make_glow_ring_badge(460, fill=RED, gold=GOLD).save(OUT_DIR / "reveal_badge_red.png")
+    make_glow_ring_badge(460, fill=TRUE_BLACK, gold=GOLD).save(OUT_DIR / "reveal_badge_black.png")
+    make_glow_ring_badge(460, fill=GREEN, gold=GOLD).save(OUT_DIR / "reveal_badge_green.png")
+
     # Bolinhas simples (sem bisel grosso -- só uma borda fina dourada logo depois do limite da
     # cor). Mesmo asset reaproveitado pros chips do histórico E pro selo colorido do número em
     # cada linha de FRIO/QUENTE (mesmo estilo visual, tamanhos diferentes).
@@ -441,6 +493,10 @@ def main() -> None:
     make_background(1080, 1920, base=(7, 10, 14), center_tint=(16, 20, 27)).save(OUT_DIR / "background.png")
     make_ambient_glow(420, BLUE_BRIGHT, alpha=40).save(OUT_DIR / "ambient_glow_blue.png")
     make_ambient_glow(420, RED_BRIGHT, alpha=40).save(OUT_DIR / "ambient_glow_red.png")
+
+    # Glow bem mais forte/largo, só pra tela de revelação (print de referência do cliente) --
+    # o azul ali é bem mais presente que a "iluminação ambiente discreta" usada atrás do logo.
+    make_ambient_glow(1000, BLUE_BRIGHT, alpha=150).save(OUT_DIR / "reveal_glow_blue.png")
 
     print(f"assets gerados em {OUT_DIR}")
 

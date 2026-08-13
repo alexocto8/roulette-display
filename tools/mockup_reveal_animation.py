@@ -38,7 +38,7 @@ import pygame
 from app.ui.theme import CYAN, RED, GREEN, ORANGE, Theme
 from tools.mockup_ui import (
     ASSETS_DIR, PROJECT_LOGO, OFF_WHITE, color_of, load_asset, asset_scaled,
-    blit_card_bg, blit_outlined, draw_text,
+    blit_card_bg, draw_text,
 )
 
 W, H = 1080, 1920
@@ -85,41 +85,60 @@ def draw_wheel(screen, wheel_base: pygame.Surface, center: tuple[float, float], 
     screen.blit(rotated, rect)
 
 
-def draw_result_badge(screen, theme: Theme, number: int) -> None:
-    """Mesmo badge/aro dourado + pills de classificação da tela principal (`draw_center`),
-    centralizado na metade DIREITA da tela -- a zona que o degradê deixa 100% clara."""
-    color = color_of(number)
-    badge_asset = {"red": "result_badge_red.png", "black": "result_badge_black.png",
-                   "green": "result_badge_green.png"}[color]
+def draw_number_dropshadow(screen, font, text, center, fill, shadow, offset) -> None:
+    """Numeral com uma cópia escura duplicada, deslocada pra baixo-direita, por BAIXO da cópia
+    branca -- efeito "extrudado/adesivo" do print de referência do cliente, diferente do contorno
+    fino (`blit_outlined`) usado no resto da tela principal."""
+    shadow_surf = font.render(text, True, shadow)
+    screen.blit(shadow_surf, shadow_surf.get_rect(center=(center[0] + offset, center[1] + offset)))
+    fill_surf = font.render(text, True, fill)
+    screen.blit(fill_surf, fill_surf.get_rect(center=center))
 
-    diameter = theme.px(360)
-    badge_size = int(diameter * 1.60)
-    cx = round(theme.width * 0.5 + theme.width * 0.5 / 2)  # centro da metade direita da tela
-    cy = theme.height // 2 - theme.px(40)
+
+def draw_result_badge(screen, theme: Theme, number: int) -> None:
+    """Refeito pra bater com o print de referência do cliente: anel fino + glow largo (não o
+    bisel grosso da tela principal), número ENORME transbordando por cima/baixo do círculo com
+    sombra deslocada, glow azul ambiente atrás, e as pills de classificação empilhadas na
+    VERTICAL (não lado a lado como na tela principal)."""
+    color = color_of(number)
+    badge_asset = {"red": "reveal_badge_red.png", "black": "reveal_badge_black.png",
+                   "green": "reveal_badge_green.png"}[color]
+
+    diameter = theme.px(520)
+    badge_size = int(diameter * 1.80)  # já inclui a folga do glow largo
+    cx = round(theme.width * 0.60)
+    cy = round(theme.height * 0.37)
+
+    glow_size = int(diameter * 2.6)
+    glow = asset_scaled("reveal_glow_blue.png", (glow_size, glow_size))
+    screen.blit(glow, (cx - glow_size // 2, cy - glow_size // 2))
+
     badge = asset_scaled(badge_asset, (badge_size, badge_size))
     screen.blit(badge, (cx - badge_size // 2, cy - badge_size // 2))
 
-    num_font = theme.font(int(diameter * 0.76), True)
-    blit_outlined(screen, num_font, str(number), (cx, cy), fill=OFF_WHITE, outline=(0, 0, 0), outline_px=0)
+    num_font = theme.font(int(diameter * 1.30), True)
+    shadow_tone = {"red": (60, 4, 2), "black": (5, 5, 6), "green": (2, 45, 22)}[color]
+    draw_number_dropshadow(screen, num_font, str(number), (cx, cy), fill=OFF_WHITE,
+                            shadow=shadow_tone, offset=theme.px(10))
 
-    tag_y = cy + int(diameter * 0.60) + theme.px(34)
     tags = [("PRETO" if color == "black" else "VERMELHO" if color == "red" else "ZERO",
              OFF_WHITE if color == "black" else RED if color == "red" else GREEN)]
     if number != 0:
         tags.append(("ÍMPAR" if number % 2 else "PAR", CYAN))
         tags.append(("MENOR" if number <= 18 else "MAIOR", ORANGE))
 
-    pill_font = theme.font(26, True)
-    pill_gap = theme.px(10)
-    pill_h = theme.px(42)
-    widths = [pill_font.size(label)[0] + theme.px(28) for label, _ in tags]
-    px = cx - (sum(widths) + pill_gap * (len(tags) - 1)) // 2
-    for (label, tcolor), pw in zip(tags, widths):
-        pill = pygame.Rect(px, tag_y, pw, pill_h)
-        blit_card_bg(screen, pill, theme.px(18))
-        pygame.draw.rect(screen, tcolor, pill, width=2, border_radius=theme.px(18))
+    pill_font = theme.font(30, True)
+    pill_w = theme.px(272)
+    pill_h = theme.px(62)
+    pill_gap = theme.px(16)
+    pill_left = cx - diameter // 2
+    tag_y = cy + int(diameter * 0.5) + theme.px(56)
+    for label, tcolor in tags:
+        pill = pygame.Rect(pill_left, tag_y, pill_w, pill_h)
+        blit_card_bg(screen, pill, theme.px(20))
+        pygame.draw.rect(screen, tcolor, pill, width=2, border_radius=theme.px(20))
         draw_text(screen, pill_font, label, pill.center, tcolor, anchor="center")
-        px += pw + pill_gap
+        tag_y += pill_h + pill_gap
 
 
 def draw_logo_splash(screen, theme: Theme, logo_raw: pygame.Surface, t: float) -> None:
