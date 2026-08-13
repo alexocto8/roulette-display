@@ -52,11 +52,12 @@ W, H = 1080, 1920
 # -- fase 0: crossfade de entrada/saída com a tela principal ----------------------------------
 GLOBAL_FADE_S = 0.3
 
-# -- fase 1: logo sozinho (tempo total DOBRADO -- pedido explícito) ---------------------------
+# -- fase 1: logo sozinho (era 5.0s no total -- pedido explícito de subir pra faixa 10-12s;
+# zoom/fade continuam rápidos/iguais, só o "segura sozinho na tela" (hold) fica bem mais longo) --
 LOGO_ZOOM_S = 0.4
-LOGO_HOLD_S = 4.0
+LOGO_HOLD_S = 10.0
 LOGO_FADE_S = 0.6
-LOGO_END_S = LOGO_ZOOM_S + LOGO_HOLD_S + LOGO_FADE_S  # 5.0s
+LOGO_END_S = LOGO_ZOOM_S + LOGO_HOLD_S + LOGO_FADE_S  # 11.0s
 
 # -- fase 2: roleta/número/badges entram juntos ------------------------------------------------
 REVEAL_FADE_S = 0.3
