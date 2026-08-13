@@ -128,28 +128,28 @@ def draw_fading_title(screen, theme: Theme, text, y, rect: pygame.Rect, color=TE
 
 def draw_header(screen, theme: Theme, header_h: int) -> None:
     """Os dois cards de limite ficam JUNTOS, no lado esquerdo (não espalhados nas duas pontas da
-    tela) -- correção explícita pedida pelo cliente, olhando a referência premium."""
+    tela), tamanho fixo ~180x105 (proporção pedida explicitamente) -- não um tamanho variável
+    calculado só a partir do texto, que ficava pequeno/errado demais."""
     indicator_h = theme.px(24)
-    pad = theme.px(14)
     card_top = indicator_h
-    card_h = header_h - indicator_h - theme.px(12)
-    label_font, value_font = theme.font(15, True), theme.font(30, True)
+    card_w, card_h = theme.px(180), min(header_h - indicator_h - theme.px(8), theme.px(105))
+    label_font, value_font = theme.font(16, True), theme.font(32, True)
 
     x = theme.px(20)
     for label, value in (("APOSTA MÍN.", "R$ 5,00"), ("APOSTA MÁX.", "R$ 500,00")):
-        w = max(value_font.size(value)[0], label_font.size(label)[0]) + pad * 2
-        rect = pygame.Rect(x, card_top, w, card_h)
+        rect = pygame.Rect(x, card_top, card_w, card_h)
         blit_card_bg(screen, rect, theme.px(8))
         pygame.draw.rect(screen, PANEL_BORDER, rect, width=1, border_radius=theme.px(8))
-        draw_text(screen, label_font, label, (rect.centerx, rect.top + theme.px(6)), TEXT_SECONDARY, anchor="midtop")
-        draw_text(screen, value_font, value, (rect.centerx, rect.top + theme.px(20)), ORANGE, anchor="midtop")
-        x = rect.right + theme.px(10)
+        draw_text(screen, label_font, label, (rect.centerx, rect.top + theme.px(14)), TEXT_SECONDARY, anchor="midtop")
+        draw_text(screen, value_font, value, (rect.centerx, rect.top + theme.px(38)), ORANGE, anchor="midtop")
+        x = rect.right + theme.px(14)
 
     dot_c = (theme.width - theme.px(18), theme.px(13))
     pygame.draw.circle(screen, GREEN, dot_c, theme.px(5))
     draw_text(screen, theme.font(14, True), "SISTEMA OK",
               (dot_c[0] - theme.px(10), dot_c[1]), TEXT_MUTED, anchor="midright")
 
+    blit_hbar(screen, "accent_gold_glow.png", pygame.Rect(0, header_h - theme.px(10), theme.width, theme.px(20)))
     blit_hbar(screen, "accent_gold.png", pygame.Rect(0, header_h - 2, theme.width, 3))
 
 
@@ -172,6 +172,9 @@ def draw_side_panel(screen, theme: Theme, panel_rect: pygame.Rect,
     glow_cy = panel_rect.top + int(panel_rect.height * 0.74)
     screen.blit(glow, (panel_rect.centerx - glow_size // 2, glow_cy - glow_size // 2))
 
+    glow_bar_asset = accent_asset.replace(".png", "_glow.png")
+    blit_hbar(screen, glow_bar_asset, pygame.Rect(panel_rect.left, panel_rect.top - theme.px(8),
+                                                   panel_rect.width, theme.px(16)))
     blit_hbar(screen, accent_asset, pygame.Rect(panel_rect.left, panel_rect.top, panel_rect.width, theme.px(4)))
     pygame.draw.rect(screen, PANEL_BORDER, panel_rect, width=1, border_radius=radius)
 
@@ -190,12 +193,12 @@ def draw_side_panel(screen, theme: Theme, panel_rect: pygame.Rect,
               pygame.Rect(panel_rect.left + theme.px(16), y, panel_rect.width - theme.px(32), 2))
     y += theme.px(12)
 
-    row_h = theme.px(128)
-    rank_font = theme.font(19, True)
+    row_h = theme.px(118)
+    rank_font = theme.font(16, True)
     num_font = theme.font(56, True)
     count_font = theme.font(32, True)
     unit_font = theme.font(14, True)
-    rank_d = theme.px(38)
+    rank_d = theme.px(40)
     inset = theme.px(24)
 
     for i, (num, count) in enumerate(entries):
@@ -203,7 +206,7 @@ def draw_side_panel(screen, theme: Theme, panel_rect: pygame.Rect,
         rank_cx = row.left + inset + rank_d // 2
         ring_img = asset_scaled(rank_ring_asset, (rank_d, rank_d))
         screen.blit(ring_img, (rank_cx - rank_d // 2, row.centery - rank_d // 2))
-        draw_text(screen, rank_font, str(i + 1), (rank_cx, row.centery), accent_color, anchor="center")
+        draw_text(screen, rank_font, f"{i + 1}º", (rank_cx, row.centery), accent_color, anchor="center")
 
         draw_text(screen, num_font, str(num), (rank_cx + rank_d // 2 + theme.px(16), row.centery),
                   OFF_WHITE, anchor="midleft")
@@ -219,8 +222,8 @@ def draw_side_panel(screen, theme: Theme, panel_rect: pygame.Rect,
         y = row.bottom
 
     if show_logo:
-        logo_zone = pygame.Rect(panel_rect.left + theme.px(20), y + theme.px(24),
-                                 panel_rect.width - theme.px(40), panel_rect.bottom - (y + theme.px(24)) - theme.px(24))
+        logo_zone = pygame.Rect(panel_rect.left + theme.px(8), y + theme.px(16),
+                                 panel_rect.width - theme.px(16), panel_rect.bottom - (y + theme.px(16)) - theme.px(16))
         draw_logo(screen, theme, logo_zone, logo_path)
 
 
@@ -228,8 +231,8 @@ def draw_logo(screen, theme: Theme, rect, image_path: str | None) -> None:
     """Logo real do estabelecimento, se disponível (`--logo`, ou `assets/logo.png` do próprio
     projeto por padrão) -- ocupa a maior parte da largura interna do painel, proporção preservada,
     pré-escalada uma vez. Sem imagem, um placeholder neutro discreto (sem caixa "LOGO...")."""
-    max_w = int(rect.width * 0.9)
-    max_h = int(rect.height * 0.95)
+    max_w = int(rect.width * 0.98)
+    max_h = int(rect.height * 0.98)
 
     image = None
     if image_path and Path(image_path).exists():
@@ -298,9 +301,12 @@ def draw_center(screen, theme: Theme, content_rect: pygame.Rect,
 
 def draw_center_history(screen, theme: Theme, rect: pygame.Rect, history: list[int]) -> None:
     """REGRA FUNCIONAL IMUTÁVEL: três raias -- preto esquerda, zero centro, vermelho direita --
-    mais recente no topo, uma linha por giro, nunca duas listas paralelas. Chips maiores (~15% a
-    mais que a v5) e mais entradas visíveis, reduzindo a sensação de vazio sem inventar giros que
-    não aconteceram (o resto continua como marcadores discretos, igual à referência)."""
+    mais recente no topo, uma linha por giro, nunca duas listas paralelas. Visualmente, um espinha
+    dourada central (com nós e fade no topo/base, igual ao pedido) substitui as três linhas soltas
+    -- cada resultado fora do centro se conecta a ela por um traço curto, criando o efeito de
+    timeline única em vez de três colunas paralelas independentes. Numerais SEMPRE off-white,
+    independente da cor do chip (era um bug: zero/vermelho usavam a própria cor de preenchimento,
+    ficando ilegíveis)."""
     y = rect.top
     draw_text(screen, theme.font(22, True), "HISTÓRICO", (rect.centerx, y), TEXT_SECONDARY, anchor="midtop")
     y += theme.px(40)
@@ -310,35 +316,47 @@ def draw_center_history(screen, theme: Theme, rect: pygame.Rect, history: list[i
         "green": rect.centerx,
         "red": rect.right - rect.width // 4,
     }
-    lane_fill = {"black": OFF_WHITE, "green": GREEN, "red": RED}
     chip_asset = {"black": "history_chip_black.png", "green": "history_chip_green.png", "red": "history_chip_red.png"}
+    spine_x = rect.centerx
 
     lanes_top = y
     lanes_bottom = rect.bottom - theme.px(58)  # reserva espaço pro selo "MAIS RECENTE" abaixo
-    d = theme.px(58)
-    row_h = int(d * 1.30)
+    d = theme.px(66)
+    row_h = int(d * 1.28)
     # Igual à regra real ("quantas linhas couberem"): nunca força mais linhas do que cabem no
     # espaço disponível -- forçar `len(history)` aqui foi o bug que empurrava o selo "MAIS
     # RECENTE" pra cima da seção de estatísticas quando a amostra tinha mais itens do que cabia.
     n_rows = max(1, (lanes_bottom - lanes_top) // row_h)
     history = history[:n_rows]
+    spine_bottom = lanes_top + n_rows * row_h
 
-    for x in lane_x.values():
-        pygame.draw.line(screen, (24, 28, 34), (x, lanes_top), (x, lanes_top + n_rows * row_h), 1)
+    # espinha dourada central com fade no topo e na base -- reaproveita o mesmo asset horizontal
+    # com gradiente/fade (`accent_gold.png`) girado 90°, em vez de gerar um PNG vertical à parte.
+    spine_h = spine_bottom - lanes_top
+    spine_w = theme.px(3)
+    spine_src = asset_scaled("accent_gold.png", (spine_h, spine_w))
+    spine_img = pygame.transform.rotate(spine_src, 90)
+    screen.blit(spine_img, (spine_x - spine_img.get_width() // 2, lanes_top))
 
-    hist_font = theme.font(int(d * 0.42), True)
-    chip_size = int(d * 1.35)
+    hist_font = theme.font(int(d * 0.40), True)
+    chip_size = int(d * 1.30)
+    node_r = theme.px(4)
     for i in range(n_rows):
         yy = lanes_top + i * row_h + row_h // 2
-        active_lane = color_of(history[i]) if i < len(history) else None
-        for lane, x in lane_x.items():
-            if lane == active_lane:
-                chip = asset_scaled(chip_asset[lane], (chip_size, chip_size))
-                screen.blit(chip, (x - chip_size // 2, yy - chip_size // 2))
-                blit_outlined(screen, hist_font, str(history[i]), (x, yy), fill=lane_fill[lane],
-                              outline=(0, 0, 0), outline_px=1)
-            else:
-                pygame.draw.circle(screen, (52, 56, 62), (x, yy), theme.px(3))
+        n = history[i] if i < len(history) else None
+        active_lane = color_of(n) if n is not None else None
+
+        pygame.draw.circle(screen, (214, 178, 104), (spine_x, yy), node_r)
+
+        if active_lane is not None and active_lane != "green":
+            x = lane_x[active_lane]
+            pygame.draw.line(screen, (196, 160, 92), (spine_x, yy), (x, yy), theme.px(2))
+
+        if active_lane is not None:
+            x = lane_x[active_lane]
+            chip = asset_scaled(chip_asset[active_lane], (chip_size, chip_size))
+            screen.blit(chip, (x - chip_size // 2, yy - chip_size // 2))
+            blit_outlined(screen, hist_font, str(n), (x, yy), fill=OFF_WHITE, outline=(0, 0, 0), outline_px=1)
 
     # legenda discreta no fim da timeline -- eco visual da regra "mais recente no topo", sem
     # nenhum dado novo.
