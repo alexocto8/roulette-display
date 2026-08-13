@@ -304,6 +304,28 @@ def make_glow_ring_badge(diameter, fill, gold, shadow_alpha=110) -> Image.Image:
     return _down(img, (canvas, canvas))
 
 
+def make_pulse_glow_ring(diameter, gold) -> Image.Image:
+    """Halo dourado avulso (sem preenchimento/anel embaixo), pra sobrepor o `reveal_badge_*` já
+    parado e fazer o "efeito de pulsar com glow dourado na borda" pedido pro número, depois que a
+    animação termina -- a intensidade (alpha) é modulada em RUNTIME via `set_alpha()` a cada
+    frame (barato, só um blit + troca de alpha, nada recalculado pixel a pixel), sincronizada com
+    a leve pulsação de escala do badge."""
+    pad = int(diameter * 0.55)
+    canvas = diameter + pad * 2
+    img = Image.new("RGBA", (canvas * SS, canvas * SS), (0, 0, 0, 0))
+    cx = cy = canvas * SS / 2
+    r = diameter * SS / 2
+
+    halo = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    halo_r = r + SS * 8
+    ImageDraw.Draw(halo).ellipse([cx - halo_r, cy - halo_r, cx + halo_r, cy + halo_r],
+                                  outline=(*gold, 255), width=int(SS * 26))
+    halo = halo.filter(ImageFilter.GaussianBlur(radius=diameter * 0.14 * SS))
+    img.alpha_composite(halo)
+
+    return _down(img, (canvas, canvas))
+
+
 # -- barras/linhas de accent com gradiente (transparente -> cor -> vivo -> cor -> transparente) --
 
 def make_accent_bar(width, height, dark, vivid) -> Image.Image:
@@ -464,6 +486,7 @@ def main() -> None:
     make_glow_ring_badge(460, fill=RED, gold=GOLD).save(OUT_DIR / "reveal_badge_red.png")
     make_glow_ring_badge(460, fill=TRUE_BLACK, gold=GOLD).save(OUT_DIR / "reveal_badge_black.png")
     make_glow_ring_badge(460, fill=GREEN, gold=GOLD).save(OUT_DIR / "reveal_badge_green.png")
+    make_pulse_glow_ring(460, gold=GOLD).save(OUT_DIR / "pulse_glow_gold.png")
 
     # Bolinhas simples (sem bisel grosso -- só uma borda fina dourada logo depois do limite da
     # cor). Mesmo asset reaproveitado pros chips do histórico E pro selo colorido do número em
