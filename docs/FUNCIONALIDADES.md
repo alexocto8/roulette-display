@@ -130,3 +130,10 @@ Informações da licença`.
 - Importe a logo do cliente, se houver.
 - Confirme que a licença está ativa (`Informações da licença`).
 - Faça um backup manual de teste (`Fazer backup do banco`) para confirmar que está funcionando.
+
+## 6. Suporte técnico
+
+- **Telefone**: (15) 3190-4141 — atendimento das 08h às 18h, segunda a sexta.
+- **Site**: www.octo.net.br
+
+*OCTO Tecnologia — gestão de TI para empresas que não podem parar.*

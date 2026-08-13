@@ -135,3 +135,10 @@ use isso só se o passo acima não funcionar.
 
 Mais detalhes técnicos (hardening opcional para rodar sem root, arquitetura, limitações
 conhecidas) estão no [`README.md`](../README.md), seção "8. Instalação num Raspberry Pi 3".
+
+## 9. Suporte técnico
+
+- **Telefone**: (15) 3190-4141 — atendimento das 08h às 18h, segunda a sexta.
+- **Site**: www.octo.net.br
+
+*OCTO Tecnologia — gestão de TI para empresas que não podem parar.*
