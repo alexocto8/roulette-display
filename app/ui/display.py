@@ -113,14 +113,17 @@ _SPLASH_CROSSFADE_MS = 420
 # novo depois). Undo (`DEL DEL`/`-` `ENTER`) continua funcionando normalmente durante a revelação,
 # só o registro de um giro NOVO é que fica bloqueado.
 _REVEAL_GLOBAL_FADE_MS = 300
+# Logo: 3s no total (entrada + estático + saída) -- pedido explícito, reduzido da rodada anterior
+# (era 11s). Zoom/fade mantêm os mesmos tempos já aprovados (0.4s/0.6s); só o "segura" encolheu
+# pra fechar em 3s.
 _REVEAL_LOGO_ZOOM_MS = 400
-_REVEAL_LOGO_HOLD_MS = 10_000
+_REVEAL_LOGO_HOLD_MS = 2000
 _REVEAL_LOGO_FADE_MS = 600
-_REVEAL_LOGO_END_MS = _REVEAL_LOGO_ZOOM_MS + _REVEAL_LOGO_HOLD_MS + _REVEAL_LOGO_FADE_MS  # 11 000
+_REVEAL_LOGO_END_MS = _REVEAL_LOGO_ZOOM_MS + _REVEAL_LOGO_HOLD_MS + _REVEAL_LOGO_FADE_MS  # 3 000
 _REVEAL_CONTENT_FADE_MS = 300
-_REVEAL_CONTENT_START_MS = _REVEAL_LOGO_END_MS + _REVEAL_CONTENT_FADE_MS  # 11 300
+_REVEAL_CONTENT_START_MS = _REVEAL_LOGO_END_MS + _REVEAL_CONTENT_FADE_MS  # 3 300
 _REVEAL_NUMBER_DISPLAY_MS = 8000
-_REVEAL_MS = _REVEAL_CONTENT_START_MS + _REVEAL_NUMBER_DISPLAY_MS  # 19 300 -- duração total
+_REVEAL_MS = _REVEAL_CONTENT_START_MS + _REVEAL_NUMBER_DISPLAY_MS  # 11 300 -- duração total
 _REVEAL_WHEEL_DECEL_MS = 2000  # a roleta só desacelera/para nos últimos 2s da animação inteira
 _REVEAL_WHEEL_DECEL_START_MS = _REVEAL_MS - _REVEAL_WHEEL_DECEL_MS
 _REVEAL_WHEEL_SPIN_DEG_S = 480.0  # rápido, ~1.3 voltas/segundo -- "igual a roleta do jogo"
