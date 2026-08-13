@@ -1,6 +1,6 @@
 # Painel de Roleta — Raspberry Pi 3
 
-**Versão atual: 1.0.1** (ver [`CHANGELOG.md`](CHANGELOG.md)).
+**Versão atual: 1.0.2** (ver [`CHANGELOG.md`](CHANGELOG.md)).
 
 Registrador/placar eletrônico de roleta física de cassino. O operador digita o número sorteado
 em um teclado numérico USB; o painel (fullscreen, em um monitor/TV próximo à mesa) atualiza
@@ -89,10 +89,14 @@ convenção de `app/models/roulette_data.py`) logo abaixo, com fonte proporciona
 círculo (não um tamanho fixo), pulsando suavemente (`_REVEAL_PULSE_HZ`) o tempo todo. Um beep
 curto (duas notas, sintetizado em código — ver `app/ui/sound.py`, sem depender de nenhum arquivo
 de áudio) toca quando a revelação aparece; falha de áudio (sem placa de som) nunca impede o resto
-de funcionar. **Puramente visual**: a revelação nunca bloqueia o teclado — um novo giro digitado
-durante os 5s é registrado normalmente e reinicia a revelação pro número novo, undo continua
-funcionando, etc. Depois de voltar ao painel compacto, o número continua tendo o "pop" mais sutil
-de sempre (`_NUMBER_POP_MS`) a cada troca.
+de funcionar. **Bloqueia o registro de um novo giro** (pedido explícito, revertendo uma versão
+anterior "puramente visual" desta mesma funcionalidade): enquanto a revelação está em tela,
+`ENTER` não confirma um número novo -- `RouletteDisplay._confirm_input` ignora a tentativa,
+mantendo os dígitos já digitados intactos, então o operador só precisa apertar `ENTER` de novo
+quando os 5s acabarem, sem perder o que tinha digitado. O undo (`DEL DEL`/`-` `ENTER`) **continua
+funcionando normalmente** durante a revelação -- o bloqueio é só para lançar um resultado novo, não
+para corrigir o anterior. Depois de voltar ao painel compacto, o número continua tendo o "pop" mais
+sutil de sempre (`_NUMBER_POP_MS`) a cada troca.
 
 A faixa "GIROS DA SESSÃO" (contador + tira horizontal de chips) que ficava entre os limites de
 aposta e as três colunas foi **eliminada** — mais espaço de tela pras três colunas, especialmente

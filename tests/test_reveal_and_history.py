@@ -1,6 +1,7 @@
 """Revelação em tela cheia pós-giro (fundo verde-gramado, círculo colorido, classificação, 5s,
-nunca bloqueia entrada) e histórico em duas colunas na coluna central (preto/vermelho, zero
-centralizado) — pedido do usuário para complementar o placar principal."""
+bloqueia o registro de um número novo enquanto está em tela) e histórico em duas colunas na
+coluna central (preto/vermelho, zero centralizado) — pedido do usuário para complementar o
+placar principal."""
 from __future__ import annotations
 
 from unittest import mock
@@ -52,6 +53,12 @@ def press_enter(display: RouletteDisplay) -> None:
 
 
 def register(display: RouletteDisplay, number: int) -> None:
+    """Sempre garante que uma revelação anterior (se houver) já tenha "acabado" antes de registrar
+    -- simula o ritmo real de uso (giros de roleta ficam minutos, não milissegundos, um do outro;
+    ver o bloqueio explícito em `_confirm_input`), sem forçar cada chamador deste helper a lidar
+    com isso manualmente."""
+    if display._reveal_active(pygame.time.get_ticks()):
+        display.reveal_started_at = pygame.time.get_ticks() - _REVEAL_MS - 1
     type_number(display, str(number))
     press_enter(display)
 
@@ -99,7 +106,7 @@ def test_reveal_tags_for_red_even_high_number():
     assert [t[0] for t in tags] == ["VERMELHO", "PAR", "MAIOR"]
 
 
-# -- estado da revelação (timer, não bloqueia entrada) ----------------------------------------
+# -- estado da revelação (timer, bloqueia registro de número novo) ----------------------------
 
 
 def test_registering_a_spin_starts_the_reveal(display):
@@ -118,14 +125,26 @@ def test_reveal_expires_after_its_duration(display):
     assert display._reveal_active(started + _REVEAL_MS + 1) is False
 
 
-def test_a_new_spin_during_the_reveal_restarts_it_and_never_blocks_registration(display):
+def test_a_new_spin_is_blocked_while_the_reveal_is_showing(display):
+    """Pedido explícito: o sistema não deve permitir registrar um número novo enquanto o anterior
+    ainda está na tela de revelação (5s) -- reverte o comportamento anterior desta mesma
+    funcionalidade ("puramente visual, nunca bloqueia"). Os dígitos digitados ficam preservados;
+    basta apertar ENTER de novo quando a revelação acabar."""
     register(display, 5)
     first_started = display.reveal_started_at
 
-    register(display, 22)  # ainda "dentro" dos 5s da revelação anterior
+    type_number(display, "22")
+    press_enter(display)  # ainda "dentro" dos 5s da revelação anterior -- deve ser ignorado
+
+    assert display.reveal_number == 5  # não trocou
+    assert display.reveal_started_at == first_started  # não reiniciou
+    assert display.service.db.total_spins(display.config.roulette_id) == 1  # não registrou
+    assert display.input_buffer == "22"  # dígitos preservados, não perdidos
+
+    # passada a janela da revelação, o mesmo ENTER (é só apertar de novo) registra normalmente.
+    display.reveal_started_at = pygame.time.get_ticks() - _REVEAL_MS - 1
+    press_enter(display)
     assert display.reveal_number == 22
-    assert display.reveal_started_at >= first_started
-    # nenhum registro foi perdido -- a revelação é só visual, nunca bloqueia o caminho crítico.
     assert display.service.db.total_spins(display.config.roulette_id) == 2
 
 

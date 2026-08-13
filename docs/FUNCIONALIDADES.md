@@ -1,4 +1,4 @@
-# Manual de funcionalidades — Painel de Roleta v1.0.1
+# Manual de funcionalidades — Painel de Roleta v1.0.2
 
 Guia prático de uso do painel eletrônico de roleta: o que aparece na tela, o que cada tecla faz e
 o que cada função do menu administrativo faz. Para instalação em um Raspberry Pi 3 do zero, veja
@@ -25,8 +25,10 @@ A tela é dividida em cinco áreas, de cima para baixo:
 5. **Animação de revelação**: toda vez que um resultado é confirmado, a tela inteira mostra por 5
    segundos um círculo grande na cor do número (verde para zero, vermelho/preto para os demais),
    com a classificação completa (VERMELHO/PRETO/ZERO, ÍMPAR/PAR, MENOR/MAIOR) e um beep curto.
-   **Isso nunca trava o teclado**: pode digitar o próximo número a qualquer momento, mesmo com a
-   animação ainda na tela — ela reinicia sozinha pro número novo.
+   **Enquanto ela está na tela, o sistema não registra um número novo**: pode digitar à vontade,
+   mas o `ENTER` só confirma depois que os 5s acabarem — os dígitos digitados não se perdem,
+   basta apertar `ENTER` de novo. Desfazer o último resultado (`DEL DEL` ou `-` `ENTER`) continua
+   funcionando normalmente durante a revelação.
 
 As estatísticas são **descritivas do histórico** — a roleta não tem memória, "frio"/"quente" não
 preveem o próximo resultado.
@@ -42,8 +44,9 @@ preveem o próximo resultado.
 | `+` | Marca "novo giro" na tela (aviso piscando, só visual — some sozinho) |
 
 **Fluxo normal**: operador vê a bolinha cair no número X → digita `X` → `ENTER` → tela confirma
-("REGISTRADO • X") e a animação de revelação aparece por 5s. Não precisa esperar a animação
-terminar para digitar o próximo número.
+("REGISTRADO • X") e a animação de revelação aparece por 5s. **O próximo número só é registrado
+depois que a animação terminar** — pode digitar antes, mas o `ENTER` de confirmação só tem efeito
+quando os 5s acabarem.
 
 ### Corrigindo um erro de digitação
 

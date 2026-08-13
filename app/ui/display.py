@@ -87,10 +87,13 @@ _ADMIN_FADE_MS = 200
 _BANNER_ANIM_MS = 200
 _SPLASH_CROSSFADE_MS = 420
 
-# Animação de revelação em tela cheia, disparada a cada giro registrado com sucesso — puramente
-# visual (timer de renderização), nunca bloqueia a entrada de teclado: um novo giro digitado
-# durante os 5s simplesmente reinicia a revelação pro novo número, no mesmo espírito de "nenhum
-# módulo auxiliar atrasa o registro" que rege o resto do app.
+# Animação de revelação em tela cheia, disparada a cada giro registrado com sucesso. Pedido
+# explícito: enquanto ela está em tela, o sistema NÃO deve permitir registrar um novo número —
+# `_confirm_input` bloqueia o ENTER de confirmação nesses 5s (mantendo o que já foi digitado, o
+# operador só precisa apertar ENTER de novo depois). Diferente do que essa constante sugeria antes
+# (a revelação já existiu como "puramente visual, nunca bloqueia" numa iteração anterior do
+# projeto) — undo (`DEL DEL`/`-` `ENTER`) continua funcionando normalmente durante a revelação, só
+# o registro de um giro NOVO é que fica bloqueado.
 _REVEAL_MS = 5000
 _REVEAL_PULSE_HZ = 0.6  # ciclos/segundo -- "levemente aumentando e diminuindo"
 # "Verde gramado" de mesa de cassino — deliberadamente diferente do GREEN vivo já usado pro
@@ -176,9 +179,10 @@ class RouletteDisplay:
         self.admin_open = False
         self.admin_fade = Tween(0.0, 0.0, 1)  # 0 = fechado, 1 = totalmente aberto
 
-        # Revelação em tela cheia pós-giro — puramente um timer de renderização (ver
-        # `_reveal_active`); nunca bloqueia teclado, então um novo giro digitado nos 5s reinicia a
-        # revelação pro novo número.
+        # Revelação em tela cheia pós-giro — timer de renderização (ver `_reveal_active`).
+        # `_confirm_input` bloqueia o registro de um giro novo enquanto ela está ativa (pedido
+        # explícito) — digitar continua funcionando, só o ENTER de confirmação fica sem efeito
+        # até os 5s acabarem.
         self.reveal_number: int | None = None
         self.reveal_color: str | None = None
         self.reveal_started_at = 0
@@ -429,6 +433,14 @@ class RouletteDisplay:
     def _confirm_input(self) -> None:
         if not self.input_buffer:
             return
+        if self._reveal_active(pygame.time.get_ticks()):
+            # Pedido explícito: não permitir registrar um número novo enquanto o anterior ainda
+            # está na tela de revelação (5s). O buffer digitado fica intacto -- o operador só
+            # precisa apertar ENTER de novo quando a revelação acabar, sem perder o que já tinha
+            # digitado. A própria tela cheia da revelação já deixa claro pro operador por que o
+            # ENTER não teve efeito, então não duplicamos isso com um banner (que nem apareceria:
+            # a revelação substitui o frame inteiro, ver `_render`).
+            return
         number = int(self.input_buffer)
         self.input_buffer = ""
         if not (0 <= number <= 36):
@@ -450,9 +462,9 @@ class RouletteDisplay:
             f"REGISTRADO • {spin.number}", NUMBER_COLOR_MAP[spin.color],
             duration_ms=_REGISTERED_FLASH_MS, font_size=44,
         )
-        # Revelação em tela cheia (5s) — puramente visual, ver `_reveal_active`. Um novo giro
-        # digitado nos 5s seguintes (o teclado nunca fica bloqueado) simplesmente reinicia o timer
-        # pro número novo, sobrescrevendo estes três campos.
+        # Revelação em tela cheia (5s), ver `_reveal_active`. Só chegamos aqui se ela NÃO estava
+        # ativa (bloqueada logo no topo de `_confirm_input`) -- então isto sempre inicia um ciclo
+        # novo, nunca sobrescreve uma revelação em andamento.
         self.reveal_number = spin.number
         self.reveal_color = spin.color
         self.reveal_started_at = pygame.time.get_ticks()

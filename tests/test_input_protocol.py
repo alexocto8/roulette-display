@@ -14,7 +14,7 @@ import pytest
 
 from app.config import Config
 from app.database.db import Database
-from app.ui.display import RouletteDisplay
+from app.ui.display import _REVEAL_MS, RouletteDisplay
 
 
 @pytest.fixture
@@ -91,9 +91,12 @@ def test_double_enter_does_not_duplicate_the_spin(display):
 
 def test_two_deliberate_entries_of_the_same_number_are_both_kept(display):
     """17 ENTER, depois 17 ENTER de novo (dois lançamentos reais) — a roleta pode repetir número
-    consecutivo, então isso TEM que continuar funcionando (não é o mesmo caso do ENTER duplicado)."""
+    consecutivo, então isso TEM que continuar funcionando (não é o mesmo caso do ENTER duplicado).
+    Cada giro real só acontece depois que a revelação do giro anterior termina (pedido explícito,
+    ver test_reveal_and_history.py) -- simulado avançando o relógio entre as duas entradas."""
     type_number(display, "17")
     press_enter(display)
+    display.reveal_started_at = pygame.time.get_ticks() - _REVEAL_MS - 1
     type_number(display, "17")
     press_enter(display)
     assert display.state.total_spins == 2
@@ -118,10 +121,13 @@ def test_held_key_repeat_on_digit_stops_at_buffer_cap(display):
 
 def test_rapid_fire_typing_registers_every_spin_in_order(display):
     """Digitação extremamente rápida = eventos processados um atrás do outro sem nenhum atraso
-    real entre eles (é exatamente isso que um dispatch síncrono de eventos simula)."""
+    real entre eles (é exatamente isso que um dispatch síncrono de eventos simula). Cada giro real
+    só é registrado depois que a revelação do anterior termina (pedido explícito) -- simulado
+    avançando o relógio entre entradas; o registro em si continua imediato e em ordem."""
     for number in ("17", "34", "0", "12", "22"):
         type_number(display, number)
         press_enter(display)
+        display.reveal_started_at = pygame.time.get_ticks() - _REVEAL_MS - 1
     assert display.state.total_spins == 5
     assert [s.number for s in display.state.history] == [22, 12, 0, 34, 17]
 

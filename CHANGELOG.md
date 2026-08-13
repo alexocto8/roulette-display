@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.2 — 2026-08-13
+
+- **Revelação em tela cheia agora bloqueia o registro de um número novo** enquanto está na tela
+  (5s) — pedido explícito, reverte o comportamento "puramente visual" da 1.0.1. Digitar continua
+  funcionando normalmente (os dígitos não se perdem), só o `ENTER` de confirmação fica sem efeito
+  até a revelação acabar. Desfazer o último resultado (`DEL DEL`/`-` `ENTER`) continua funcionando
+  durante a revelação — o bloqueio é só para lançar um resultado novo.
+- Documentos em PDF (`docs/*.pdf`), gerados a partir do markdown correspondente.
+
 ## 1.0.1 — 2026-08-13
 
 Ajustes visuais/UX pedidos após os primeiros testes em servidor real:
