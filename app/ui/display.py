@@ -30,6 +30,7 @@ import math
 import time
 
 import pygame
+from PIL import Image as PILImage
 
 from app.config import Config
 from app.database.db import Database
@@ -122,23 +123,23 @@ _REVEAL_LOGO_FADE_MS = 600
 _REVEAL_LOGO_END_MS = _REVEAL_LOGO_ZOOM_MS + _REVEAL_LOGO_HOLD_MS + _REVEAL_LOGO_FADE_MS  # 3 000
 _REVEAL_CONTENT_FADE_MS = 300
 _REVEAL_CONTENT_START_MS = _REVEAL_LOGO_END_MS + _REVEAL_CONTENT_FADE_MS  # 3 300
-_REVEAL_NUMBER_DISPLAY_MS = 8000
-_REVEAL_MS = _REVEAL_CONTENT_START_MS + _REVEAL_NUMBER_DISPLAY_MS  # 11 300 -- duração total
+_REVEAL_NUMBER_DISPLAY_MS = 5000  # era 8000 -- pedido explícito de reduzir
+_REVEAL_MS = _REVEAL_CONTENT_START_MS + _REVEAL_NUMBER_DISPLAY_MS  # 8 300 -- duração total
 _REVEAL_WHEEL_DECEL_MS = 2000  # a roleta só desacelera/para nos últimos 2s da animação inteira
 _REVEAL_WHEEL_DECEL_START_MS = _REVEAL_MS - _REVEAL_WHEEL_DECEL_MS
 _REVEAL_WHEEL_SPIN_DEG_S = 480.0  # rápido, ~1.3 voltas/segundo -- "igual a roleta do jogo"
 _REVEAL_PULSE_PERIOD_MS = 1200
 
-# Rotacionar uma imagem circular grande (a roleta ocupa 60% da altura da tela) em tempo real, TODO
-# frame, por ~14s de animação seria caro demais pra um Pi 3 -- em vez disso, um número pequeno de
-# ângulos é pré-rotacionado UMA VEZ (numa resolução pequena, não na resolução final de tela) e
-# cacheado em memória; a cada frame só se escolhe o ângulo mais próximo e faz UM `smoothscale` até
-# o tamanho final (bem mais barato que rotacionar na resolução final). 36 passos = 10° de
-# resolução -- imperceptível numa roleta girando rápido, e mesmo desacelerando só fica levemente
-# "granulado" no último instante antes de parar. 500px de origem mantém o cache inteiro (36
-# frames) em ~35MB, bem dentro do orçamento de memória do Pi 3.
-_REVEAL_WHEEL_ROTATION_STEPS = 36
-_REVEAL_WHEEL_SOURCE_PX = 500
+# A roleta gira via um GIF de quadros PRÉ-ROTACIONADOS no build (`tools/build_ui_assets.py` ->
+# `make_wheel_spin_gif`), não por `pygame.transform.rotozoom` em tempo real -- essa era a
+# implementação anterior, e saiu "estranha" na tela real: `rotozoom` cresce o canvas do
+# resultado pra caber o retângulo rotacionado inteiro (varia por ângulo), e escalar cada quadro
+# de canvas DIFERENTE pro mesmo tamanho final fazia o círculo parecer pulsar de tamanho enquanto
+# girava. Os quadros do GIF (gerados com `Image.rotate(..., expand=False)`, canvas sempre igual)
+# são decodificados uma única vez no primeiro uso (`_wheel_rotation_frames`) e ficam em memória
+# como Surfaces do pygame -- todo frame depois disso é só escolher o quadro mais próximo do
+# ângulo atual e um `smoothscale` até o tamanho final, nunca uma rotação recalculada.
+_REVEAL_WHEEL_GIF = "roulette_wheel_spin.gif"
 
 # Histórico central: três raias verticais (preto/zero/vermelho) com nós/conectores dourados --
 # tons diferentes do GOLD "cheio" usado em bordas/linhas de accent (mais claro/mais escuro,
@@ -1240,12 +1241,19 @@ class RouletteDisplay:
         return scale, glow_t
 
     def _wheel_rotation_frames(self) -> list[pygame.Surface]:
+        """Decodifica os quadros do GIF pré-rotacionado (`_REVEAL_WHEEL_GIF`) uma única vez, no
+        primeiro uso -- cada quadro do GIF (todos do MESMO tamanho, ao contrário do que
+        `pygame.transform.rotozoom` produziria em tempo real) vira uma `pygame.Surface` cacheada
+        em memória. Nenhuma rotação acontece depois disso -- só a escolha de qual quadro mostrar
+        (ver `_draw_reveal_wheel`)."""
         frames = self._wheel_rotation_cache
         if frames is None:
-            raw = self.ui_assets.raw("roulette_wheel.png")
-            base = pygame.transform.smoothscale(raw, (_REVEAL_WHEEL_SOURCE_PX, _REVEAL_WHEEL_SOURCE_PX))
-            step_deg = 360 / _REVEAL_WHEEL_ROTATION_STEPS
-            frames = [pygame.transform.rotozoom(base, i * step_deg, 1.0) for i in range(_REVEAL_WHEEL_ROTATION_STEPS)]
+            gif = PILImage.open(self.ui_assets.base_dir / _REVEAL_WHEEL_GIF)
+            frames = []
+            for i in range(gif.n_frames):
+                gif.seek(i)
+                rgba = gif.convert("RGBA")
+                frames.append(pygame.image.frombytes(rgba.tobytes(), rgba.size, "RGBA").convert_alpha())
             self._wheel_rotation_cache = frames
         return frames
 
@@ -1272,8 +1280,8 @@ class RouletteDisplay:
         theme = self.theme
         diameter = round(theme.height * 0.6)
         frames = self._wheel_rotation_frames()
-        step_deg = 360 / _REVEAL_WHEEL_ROTATION_STEPS
-        idx = round(self._reveal_wheel_angle(elapsed) / step_deg) % _REVEAL_WHEEL_ROTATION_STEPS
+        step_deg = 360 / len(frames)
+        idx = round(self._reveal_wheel_angle(elapsed) / step_deg) % len(frames)
         frame = pygame.transform.smoothscale(frames[idx], (diameter, diameter))
         cy = theme.height / 2
         cx = -0.10 * diameter

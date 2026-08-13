@@ -406,6 +406,46 @@ def make_simple_chip(diameter, fill, gold, shadow_alpha=90) -> Image.Image:
     return _down(img, (canvas, canvas))
 
 
+def make_wheel_spin_gif(source_path: Path, out_path: Path, steps: int = 48, size: int = 400) -> None:
+    """GIF animado da roleta girando (recortada do print de referência do cliente,
+    `roulette_wheel.png`), com `steps` quadros ROTACIONADOS UMA VEZ AQUI, no build -- pedido
+    explícito depois que a rotação em tempo real (`pygame.transform.rotozoom` por frame) saiu
+    "estranha" na tela real: `rotozoom` cresce o CANVAS do resultado pra caber o retângulo
+    rotacionado inteiro (ex.: 500x500 vira ~684x684 a 30°/45°/60°...), e escalar cada quadro de
+    canvas DIFERENTE pro mesmo tamanho final fazia o círculo da roleta parecer pulsar/respirar de
+    tamanho enquanto girava. `Image.rotate(..., expand=False)` mantém o canvas sempre EXATAMENTE
+    do mesmo tamanho -- como o disco da roleta já é um círculo perfeito inscrito no quadrado (raio
+    tangente às 4 bordas), girar em torno do próprio centro nunca corta conteúdo nem precisa de
+    mais espaço, então não sobra motivo pra deixar o canvas crescer. Salvo com transparência de
+    verdade (não uma cor sólida "de fundo" gravada nos cantos) -- os 4 cantos fora do círculo
+    inscrito continuam realmente vazios em todo quadro."""
+    base = Image.open(source_path).convert("RGBA")
+    if base.size != (size, size):
+        base = base.resize((size, size), Image.LANCZOS)
+
+    # UMA paleta só, tirada da imagem original (não rotacionada) e reaplicada em todo quadro --
+    # cada quadro é a MESMA arte só girada, então uma paleta compartilhada deixa os quadros quase
+    # idênticos em bytes entre si, o que o `optimize=True` do GIF aproveita pra codificar só a
+    # DIFERENÇA de um quadro pro outro (em vez de cada quadro carregar sua própria paleta de 255
+    # cores independente, que inflava o arquivo pra >10MB sem necessidade nenhuma).
+    palette_src = base.convert("RGB").quantize(colors=255, method=Image.MEDIANCUT)
+
+    quantized = []
+    for i in range(steps):
+        angle = i * (360 / steps)
+        frame = base.rotate(-angle, resample=Image.BICUBIC, expand=False)
+        alpha = frame.split()[-1]
+        transparent_mask = alpha.point(lambda a: 255 if a < 128 else 0)
+        p = frame.convert("RGB").quantize(colors=255, palette=palette_src)
+        p.paste(255, mask=transparent_mask)  # índice 255 reservado -- pixel transparente
+        quantized.append(p)
+
+    quantized[0].save(
+        out_path, save_all=True, append_images=quantized[1:], loop=0,
+        duration=15, disposal=2, transparency=255, optimize=True,
+    )
+
+
 def make_background(width, height, base, center_tint) -> Image.Image:
     """Fundo com profundidade sutil: leve iluminação central + vignette discreto nos cantos.
     Pré-renderizado 1x -- em runtime custa um único `blit()` no lugar do `screen.fill()` flat que
@@ -498,6 +538,14 @@ def main() -> None:
     make_simple_chip(72, fill=RED, gold=GOLD).save(OUT_DIR / "number_chip_red.png")
     make_simple_chip(72, fill=TRUE_BLACK, gold=GOLD).save(OUT_DIR / "number_chip_black.png")
     make_simple_chip(72, fill=GREEN, gold=GOLD).save(OUT_DIR / "number_chip_green.png")
+
+    # GIF da roleta girando pra tela de revelação -- substitui a rotação em tempo real
+    # (`pygame.transform.rotozoom` por frame), que ficava "estranha" (círculo pulsando de
+    # tamanho) na tela real. Depende de `roulette_wheel.png` já existir (recorte do print de
+    # referência do cliente, feito uma vez à parte -- não gerado por este script).
+    wheel_source = OUT_DIR / "roulette_wheel.png"
+    if wheel_source.exists():
+        make_wheel_spin_gif(wheel_source, OUT_DIR / "roulette_wheel_spin.gif")
 
     make_accent_bar(420, 6, BLUE_DARK, BLUE_BRIGHT).save(OUT_DIR / "accent_cold.png")
     make_accent_bar(420, 6, RED_DARK, RED_BRIGHT).save(OUT_DIR / "accent_hot.png")
