@@ -1,28 +1,22 @@
-"""Mockup estático (FASE 3 do redesign visual, v4) — gera um PNG 1080x1920 reproduzindo fielmente
-a composição/densidade de uma referência visual "cassino premium" fornecida pelo cliente, mantendo
-100% da lógica funcional real do sistema (app/ui/display.py). Só técnicas gráficas disponíveis em
-Pygame/SDL no Raspberry Pi 3: retângulo, círculo, linha, texto com contorno via multi-blit, fontes
-cacheadas por tamanho. Sem blur, sem shader, sem glow em camadas, sem filtro complexo.
+"""Mockup estático (FASE 3 do redesign visual, v5) — gera um PNG 1080x1920 usando assets gráficos
+PRÉ-RENDERIZADOS (`assets/ui/*.png`, gerados uma única vez por `tools/build_ui_assets.py` via
+Pillow) para reproduzir o acabamento "produto comercial" da referência premium: sombras suaves,
+gradientes, glow controlado, ícones vetoriais com antialiasing real. Nada disso é recalculado em
+runtime -- os PNGs são carregados uma vez, cacheados como `pygame.Surface`, e só `blit()`/
+`smoothscale()` (cacheado por tamanho) acontecem depois disso. Mesma distinção que o cliente
+pediu explicitamente: "não recalcular efeito caro continuamente" != "não usar efeito caro".
 
-Reutiliza `app.ui.theme.Theme`/paleta (mesmo módulo que a tela real usa) -- as cores sugeridas pelo
-cliente nesta rodada (#070B10, #00A8FF, etc.) são conceitualmente quase idênticas à paleta já
-existente em produção, então o mockup continua na paleta real em vez de introduzir uma segunda
-paleta que divergiria da implementação final.
-
-v4 -- reformulação total de composição pedida pelo cliente: FRIO/QUENTE viram UM card único que
-ocupa a altura combinada de "último resultado + histórico" (mesma técnica visual da referência:
-painel com borda visível preenchendo todo o espaço reservado, ranking compacto no topo, sem
-"flutuar" no meio de espaço vazio). Proporções de zona seguem os percentuais pedidos: cabeçalho
-~9%, último resultado ~22%, histórico ~42%, estatísticas ~16%.
-
-Uso:
+Antes de rodar este script, gere os assets (se ainda não existirem ou se `build_ui_assets.py`
+mudou):
+    python tools/build_ui_assets.py
     python tools/mockup_ui.py [--out CAMINHO.png] [--logo CAMINHO.png]
 
-Roda com `SDL_VIDEODRIVER=dummy` — não abre janela, não toca em banco/config real."""
+Roda com `SDL_VIDEODRIVER=dummy` — não abre janela, não toca em banco/config real. Mantém 100% da
+lógica funcional/estrutural já aprovada na v4 (zonas por proporção, colunas 28/44/28, histórico em
+três raias, FRIO/QUENTE simétricos) -- esta rodada é só acabamento/direção de arte."""
 from __future__ import annotations
 
 import argparse
-import math
 import os
 import sys
 from pathlib import Path
@@ -40,6 +34,7 @@ from app.ui.theme import (
 )
 
 W, H = 1080, 1920
+ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets" / "ui"
 
 _RED_NUMBERS = {1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36}
 
@@ -48,6 +43,32 @@ def color_of(n: int) -> str:
     if n == 0:
         return "green"
     return "red" if n in _RED_NUMBERS else "black"
+
+
+# -- cache de assets: cada PNG é carregado do disco UMA vez; cada escala pedida (tamanho final em
+# pixels) também é computada e cacheada uma vez -- exatamente o padrão já usado em produção pelo
+# logo (`self.logo_surface`, pré-escalado no __init__) e pelas sombras (`_trapezoid_shadow_cache`
+# em `display.py`). Nenhum `smoothscale`/`image.load` acontece mais de uma vez por combinação
+# (asset, tamanho).
+_raw_cache: dict[str, pygame.Surface] = {}
+_scaled_cache: dict[tuple[str, int, int], pygame.Surface] = {}
+
+
+def load_asset(name: str) -> pygame.Surface:
+    surf = _raw_cache.get(name)
+    if surf is None:
+        surf = pygame.image.load(str(ASSETS_DIR / name)).convert_alpha()
+        _raw_cache[name] = surf
+    return surf
+
+
+def asset_scaled(name: str, size: tuple[int, int]) -> pygame.Surface:
+    key = (name, size[0], size[1])
+    surf = _scaled_cache.get(key)
+    if surf is None:
+        surf = pygame.transform.smoothscale(load_asset(name), size)
+        _scaled_cache[key] = surf
+    return surf
 
 
 def blit_outlined(surface, font, text, center, fill, outline, outline_px=1):
@@ -69,29 +90,26 @@ def draw_text(surface, font, text, pos, color, anchor="topleft"):
     return r
 
 
-def draw_snowflake_icon(screen, center, size, color):
-    cx, cy = center
-    for angle in (0, 60, 120):
-        rad = math.radians(angle)
-        dx, dy = math.cos(rad) * size, math.sin(rad) * size
-        pygame.draw.line(screen, color, (cx - dx, cy - dy), (cx + dx, cy + dy), 2)
+def blit_hbar(screen, name, rect: pygame.Rect) -> None:
+    """Barra horizontal com gradiente/fade pré-renderizado (accent de card, divisor, etc.),
+    esticada pro tamanho pedido -- 1 `smoothscale` cacheado por tamanho, não um degradê recalculado
+    pixel a pixel a cada chamada."""
+    img = asset_scaled(name, (max(1, rect.width), rect.height))
+    screen.blit(img, rect.topleft)
 
 
-def draw_flame_icon(screen, center, size, color):
-    cx, cy = center
-    pts = [
-        (cx, cy - size), (cx + size * 0.55, cy - size * 0.1), (cx + size * 0.35, cy + size * 0.9),
-        (cx, cy + size * 0.55), (cx - size * 0.35, cy + size * 0.9), (cx - size * 0.55, cy - size * 0.1),
-    ]
-    pygame.draw.polygon(screen, color, pts)
+def blit_card_bg(screen, rect: pygame.Rect, radius: int) -> None:
+    """Fundo grafite com leve gradiente vertical (em vez de um flat-fill único) -- o tile de 8px
+    de largura já vem pré-renderizado (`card_gradient.png`); só esticamos pro tamanho do card."""
+    grad = asset_scaled("card_gradient.png", (rect.width, rect.height))
+    mask = pygame.Surface(rect.size, pygame.SRCALPHA)
+    pygame.draw.rect(mask, (255, 255, 255, 255), mask.get_rect(), border_radius=radius)
+    grad = grad.copy()
+    grad.blit(mask, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+    screen.blit(grad, rect.topleft)
 
 
 def draw_header(screen, theme: Theme, header_h: int) -> None:
-    """ZONA 1: dois cards compactos (APOSTA MÍN./MÁX.) + indicador discreto no canto. Sem
-    relógio/data/copyright/OCTO/retenção/backup. Linha de accent fina abaixo de tudo.
-
-    Faixa fininha reservada no topo só para o indicador -- evita a sobreposição entre o texto
-    "SISTEMA OK" e o card APOSTA MÁX. quando os dois disputam o mesmo canto."""
     indicator_h = theme.px(26)
     pad = theme.px(16)
     card_top = indicator_h
@@ -102,7 +120,7 @@ def draw_header(screen, theme: Theme, header_h: int) -> None:
         w = max(value_font.size(value)[0], label_font.size(label)[0]) + pad * 2
         rect = (pygame.Rect(x_ref, card_top, w, card_h) if left
                 else pygame.Rect(x_ref - w, card_top, w, card_h))
-        pygame.draw.rect(screen, PANEL_BG, rect, border_radius=theme.px(8))
+        blit_card_bg(screen, rect, theme.px(8))
         pygame.draw.rect(screen, PANEL_BORDER, rect, width=1, border_radius=theme.px(8))
         draw_text(screen, label_font, label, (rect.centerx, rect.top + theme.px(7)), TEXT_SECONDARY, anchor="midtop")
         draw_text(screen, value_font, value, (rect.centerx, rect.top + theme.px(24)), ORANGE, anchor="midtop")
@@ -115,18 +133,12 @@ def draw_header(screen, theme: Theme, header_h: int) -> None:
     draw_text(screen, theme.font(14, True), "SISTEMA OK",
               (dot_c[0] - theme.px(10), dot_c[1]), TEXT_MUTED, anchor="midright")
 
-    pygame.draw.line(screen, (74, 62, 40), (0, header_h), (theme.width, header_h), 1)
+    blit_hbar(screen, "accent_gold.png", pygame.Rect(0, header_h - 2, theme.width, 3))
 
 
-def draw_side_card(screen, theme: Theme, col_rect: pygame.Rect, top_y: int, title, subtitle, accent, icon,
-                    entries, unit, show_logo: bool = False, logo_path: str | None = None,
-                    logo_zone_h: int = 0) -> pygame.Rect:
-    """FRIO/QUENTE: card compacto e bem preenchido, do TAMANHO DO SEU CONTEÚDO (ranking + logo,
-    quando houver) -- não esticado para preencher artificialmente a coluna inteira (a referência
-    do cliente também deixa espaço livre abaixo do card, isso é intencional, não um defeito).
-    FRIO e QUENTE começam exatamente na mesma altura (`top_y`) e usam a mesma tipografia/row_h --
-    é isso que garante "componentes irmãos", não terem a mesma altura total de card (QUENTE fica
-    mais alto por causa da logo, exatamente como na referência)."""
+def draw_side_card(screen, theme: Theme, col_rect: pygame.Rect, top_y: int, title, subtitle,
+                    accent_asset: str, icon_asset: str, entries, unit, rank_ring_asset: str,
+                    show_logo: bool = False, logo_path: str | None = None, logo_zone_h: int = 0) -> pygame.Rect:
     row_h = theme.px(128)
     header_h = theme.px(20 + 36 + 28 + 10)
     card_h = header_h + row_h * len(entries) + theme.px(18) + (logo_zone_h if show_logo else 0)
@@ -135,43 +147,43 @@ def draw_side_card(screen, theme: Theme, col_rect: pygame.Rect, top_y: int, titl
     rect = col_rect.inflate(-side_pad * 2, 0)
     rect.top = top_y
     rect.height = card_h
+    radius = theme.px(14)
 
-    pygame.draw.rect(screen, PANEL_BG, rect, border_radius=theme.px(14))
-    pygame.draw.rect(screen, accent, (rect.left, rect.top, rect.width, theme.px(3)),
-                      border_top_left_radius=theme.px(14), border_top_right_radius=theme.px(14))
-    pygame.draw.rect(screen, PANEL_BORDER, rect, width=1, border_radius=theme.px(14))
+    blit_card_bg(screen, rect, radius)
+    blit_hbar(screen, accent_asset, pygame.Rect(rect.left, rect.top, rect.width, theme.px(4)))
+    pygame.draw.rect(screen, PANEL_BORDER, rect, width=1, border_radius=radius)
 
-    y = rect.top + theme.px(20)
+    accent = CYAN if "cold" in accent_asset else RED
+
+    y = rect.top + theme.px(22)
+    icon_size = theme.px(30)
+    icon_img = asset_scaled(icon_asset, (icon_size, icon_size))
     title_font = theme.font(30, True)
     title_w = title_font.size(title)[0]
-    icon_r = theme.px(11)
-    icon_cx = rect.centerx - title_w // 2 - icon_r - theme.px(9)
-    if icon == "snowflake":
-        draw_snowflake_icon(screen, (icon_cx, y + icon_r), icon_r, accent)
-    else:
-        draw_flame_icon(screen, (icon_cx, y + icon_r * 1.3), icon_r, accent)
-    draw_text(screen, title_font, title, (rect.centerx + icon_r, y), accent, anchor="midtop")
+    icon_x = rect.centerx - title_w // 2 - icon_size - theme.px(8)
+    screen.blit(icon_img, (icon_x, y - theme.px(2)))
+    draw_text(screen, title_font, title, (rect.centerx + theme.px(8), y), accent, anchor="midtop")
     y += theme.px(36)
     draw_text(screen, theme.font(16, True), subtitle, (rect.centerx, y), TEXT_SECONDARY, anchor="midtop")
-    y += theme.px(28)
-    pygame.draw.line(screen, PANEL_BORDER, (rect.left + theme.px(18), y), (rect.right - theme.px(18), y), 1)
-    y += theme.px(10)
+    y += theme.px(26)
+    blit_hbar(screen, "separator_fade.png", pygame.Rect(rect.left + theme.px(16), y, rect.width - theme.px(32), 2))
+    y += theme.px(12)
 
-    rank_font = theme.font(20, True)
+    rank_font = theme.font(19, True)
     num_font = theme.font(56, True)
     count_font = theme.font(32, True)
     unit_font = theme.font(14, True)
-    rank_r = theme.px(18)
+    rank_d = theme.px(38)
     inset = theme.px(24)
 
     for i, (num, count) in enumerate(entries):
         row = pygame.Rect(rect.left, y, rect.width, row_h)
-        rank_cx = row.left + inset + rank_r
-        pygame.draw.circle(screen, BG, (rank_cx, row.centery), rank_r)
-        pygame.draw.circle(screen, accent, (rank_cx, row.centery), rank_r, width=1)
+        rank_cx = row.left + inset + rank_d // 2
+        ring_img = asset_scaled(rank_ring_asset, (rank_d, rank_d))
+        screen.blit(ring_img, (rank_cx - rank_d // 2, row.centery - rank_d // 2))
         draw_text(screen, rank_font, str(i + 1), (rank_cx, row.centery), accent, anchor="center")
 
-        draw_text(screen, num_font, str(num), (rank_cx + rank_r + theme.px(16), row.centery),
+        draw_text(screen, num_font, str(num), (rank_cx + rank_d // 2 + theme.px(16), row.centery),
                   TEXT_PRIMARY, anchor="midleft")
 
         val_x = row.right - inset
@@ -180,8 +192,8 @@ def draw_side_card(screen, theme: Theme, col_rect: pygame.Rect, top_y: int, titl
         draw_text(screen, unit_font, unit, (val_x, count_r.bottom + theme.px(1)), TEXT_MUTED, anchor="topright")
 
         if i < len(entries) - 1:
-            ly = row.bottom
-            pygame.draw.line(screen, PANEL_BORDER, (rect.left + theme.px(18), ly), (rect.right - theme.px(18), ly), 1)
+            blit_hbar(screen, "separator_fade.png",
+                      pygame.Rect(rect.left + theme.px(16), row.bottom, rect.width - theme.px(32), 2))
         y = row.bottom
 
     if show_logo:
@@ -193,8 +205,6 @@ def draw_side_card(screen, theme: Theme, col_rect: pygame.Rect, top_y: int, titl
 
 
 def draw_logo(screen, theme: Theme, rect, image_path: str | None) -> None:
-    """Pré-escala/centraliza preservando aspect ratio quando existe uma logo real (mesma técnica
-    de `_prepare_logo` em produção); sem imagem configurada, placeholder neutro sem texto grande."""
     max_w = int(rect.width * 0.82)
     max_h = int(rect.height * 0.86)
 
@@ -217,27 +227,24 @@ def draw_logo(screen, theme: Theme, rect, image_path: str | None) -> None:
 
 def draw_center(screen, theme: Theme, last_rect: pygame.Rect, hist_rect: pygame.Rect,
                  last_number: int, history: list[int]) -> None:
-    # -- ÚLTIMO RESULTADO (ZONA 2, elemento de maior impacto) --
     y = last_rect.top + theme.px(14)
     draw_text(screen, theme.font(32, True), "ÚLTIMO RESULTADO", (last_rect.centerx, y), TEXT_PRIMARY, anchor="midtop")
     y += theme.px(48)
 
     last_color = color_of(last_number)
-    circle_fill = {"red": RED, "black": GRAY_85, "green": GREEN}[last_color]
-    border_tone = {"red": (255, 120, 112), "black": (100, 102, 108), "green": (90, 235, 160)}[last_color]
-    gold_accent = (196, 160, 92)  # accent dourado MUITO sutil (um único anel fino), não a cor do círculo
+    badge_asset = {"red": "result_badge_red.png", "black": "result_badge_black.png",
+                   "green": "result_badge_green.png"}[last_color]
 
-    radius = int(last_rect.width * 0.325)
-    cx, cy = last_rect.centerx, y + radius
+    diameter = int(last_rect.width * 0.66)
+    badge_size = int(diameter * 1.32)  # o PNG já inclui a margem da sombra/anel de accent
+    badge = asset_scaled(badge_asset, (badge_size, badge_size))
+    cx, cy = last_rect.centerx, y + diameter // 2
+    screen.blit(badge, (cx - badge_size // 2, cy - badge_size // 2))
 
-    pygame.draw.circle(screen, circle_fill, (cx, cy), radius)
-    pygame.draw.circle(screen, border_tone, (cx, cy), radius, width=theme.px(2))
-    pygame.draw.circle(screen, gold_accent, (cx, cy), radius + theme.px(7), width=1)
-
-    num_font = theme.font(int(radius * 1.3), True)
+    num_font = theme.font(int(diameter * 0.62), True)
     blit_outlined(screen, num_font, str(last_number), (cx, cy), fill=TEXT_PRIMARY, outline=(0, 0, 0), outline_px=0)
 
-    tag_y = cy + radius + theme.px(30)
+    tag_y = cy + diameter // 2 + theme.px(30)
     tags = [("PRETO" if last_color == "black" else "VERMELHO" if last_color == "red" else "ZERO",
              TEXT_PRIMARY if last_color == "black" else RED if last_color == "red" else GREEN)]
     if last_number != 0:
@@ -255,16 +262,13 @@ def draw_center(screen, theme: Theme, last_rect: pygame.Rect, hist_rect: pygame.
         draw_text(screen, pill_font, label, pill.center, color, anchor="center")
         px += pw + pill_gap
 
-    # -- HISTÓRICO (ZONA 3, região central abaixo do último resultado) --
     draw_center_history(screen, theme, hist_rect, history)
 
 
 def draw_center_history(screen, theme: Theme, rect: pygame.Rect, history: list[int]) -> None:
     """REGRA FUNCIONAL IMUTÁVEL: três raias -- preto esquerda, zero centro, vermelho direita --
-    mais recente no topo, uma linha por giro, nunca duas listas paralelas. Círculos grandes,
-    legíveis a distância; abaixo dos giros reais, as raias continuam como guias verticais
-    pontilhadas discretas (slots futuros) até o fim da zona -- mesma ideia da referência, sem
-    inventar giros que não aconteceram."""
+    mais recente no topo, uma linha por giro, nunca duas listas paralelas. Cada resultado usa o
+    chip pré-renderizado (glow+anel+gradiente) em vez de um círculo flat."""
     y = rect.top
     draw_text(screen, theme.font(22, True), "HISTÓRICO", (rect.centerx, y), TEXT_SECONDARY, anchor="midtop")
     y += theme.px(40)
@@ -275,48 +279,45 @@ def draw_center_history(screen, theme: Theme, rect: pygame.Rect, history: list[i
         "red": rect.right - rect.width // 4,
     }
     lane_fill = {"black": TEXT_PRIMARY, "green": GREEN, "red": RED}
-    lane_ring = {"black": (110, 112, 116), "green": (20, 130, 80), "red": (170, 50, 46)}
+    chip_asset = {"black": "history_chip_black.png", "green": "history_chip_green.png", "red": "history_chip_red.png"}
 
     lanes_top = y
     lanes_bottom = rect.bottom - theme.px(6)
-    r = theme.px(34)
-    row_h = int(r * 2.35)
+    d = theme.px(64)
+    row_h = int(d * 1.18)
     n_rows = max(len(history), (lanes_bottom - lanes_top) // row_h)
 
+    # A raia vertical é uma linha fininha reta (um gradiente horizontal não faz sentido numa linha
+    # vertical) -- desenhada direto, é uma primitiva de 1px, custo desprezível mesmo em runtime.
     for x in lane_x.values():
-        pygame.draw.line(screen, (26, 30, 36), (x, lanes_top), (x, lanes_top + n_rows * row_h), 1)
+        pygame.draw.line(screen, (24, 28, 34), (x, lanes_top), (x, lanes_top + n_rows * row_h), 1)
 
-    hist_font = theme.font(int(r * 1.15), True)
+    hist_font = theme.font(int(d * 0.42), True)
+    chip_size = int(d * 1.3)
     for i in range(n_rows):
         yy = lanes_top + i * row_h + row_h // 2
-        if i < len(history):
-            n = history[i]
-            active_lane = color_of(n)
-        else:
-            n = None
-            active_lane = None
+        active_lane = color_of(history[i]) if i < len(history) else None
         for lane, x in lane_x.items():
             if lane == active_lane:
-                pygame.draw.circle(screen, lane_ring[lane], (x, yy), r + theme.px(4), width=2)
-                pygame.draw.circle(screen, PANEL_BG, (x, yy), r)
-                blit_outlined(screen, hist_font, str(n), (x, yy), fill=lane_fill[lane],
+                chip = asset_scaled(chip_asset[lane], (chip_size, chip_size))
+                screen.blit(chip, (x - chip_size // 2, yy - chip_size // 2))
+                blit_outlined(screen, hist_font, str(history[i]), (x, yy), fill=lane_fill[lane],
                               outline=(0, 0, 0), outline_px=1)
             else:
-                pygame.draw.circle(screen, (52, 56, 62), (x, yy), theme.px(3))
+                pygame.draw.circle(screen, (50, 54, 60), (x, yy), theme.px(3))
 
 
 def draw_stats(screen, theme: Theme, rect: pygame.Rect) -> None:
-    """ZONA 4: título + 7 cards compactos ocupando toda a largura -- percentual protagonista,
-    label secundária, sem gráfico/número absoluto que não exista na implementação real."""
     draw_text(screen, theme.font(22, True), "ESTATÍSTICAS", (rect.centerx, rect.top), TEXT_SECONDARY, anchor="midtop")
     cards_top = rect.top + theme.px(38)
-    pygame.draw.line(screen, PANEL_BORDER, (theme.px(24), cards_top - theme.px(10)),
-                      (rect.width - theme.px(24), cards_top - theme.px(10)), 1)
+    blit_hbar(screen, "separator_fade.png",
+              pygame.Rect(theme.px(24), cards_top - theme.px(10), rect.width - theme.px(48), 2))
 
     cells = [
-        ("ÍMPAR", "47%", CYAN), ("PAR", "51%", CYAN), ("VERMELHO", "49%", RED),
-        ("ZERO", "3%", GREEN), ("PRETO", "48%", TEXT_PRIMARY),
-        ("MENOR", "46%", ORANGE), ("MAIOR", "51%", ORANGE),
+        ("ÍMPAR", "47%", CYAN, "accent_cold.png"), ("PAR", "51%", CYAN, "accent_cold.png"),
+        ("VERMELHO", "49%", RED, "accent_hot.png"), ("ZERO", "3%", GREEN, "accent_green.png"),
+        ("PRETO", "48%", TEXT_PRIMARY, "accent_white.png"),
+        ("MENOR", "46%", ORANGE, "accent_orange.png"), ("MAIOR", "51%", ORANGE, "accent_orange.png"),
     ]
     cell_w = theme.width / len(cells)
     gutter = theme.px(6)
@@ -324,28 +325,26 @@ def draw_stats(screen, theme: Theme, rect: pygame.Rect) -> None:
     value_font = theme.font(36, True)
     label_font = theme.font(17, True)
 
-    for i, (label, value, accent) in enumerate(cells):
+    for i, (label, value, accent, accent_asset) in enumerate(cells):
         outer = pygame.Rect(int(i * cell_w), cards_top, int(cell_w) + 1, card_h)
         card = outer.inflate(-gutter * 2, 0)
-        pygame.draw.rect(screen, PANEL_BG, card, border_radius=theme.px(8))
-        pygame.draw.rect(screen, accent, (card.left, card.top, card.width, theme.px(3)),
-                          border_top_left_radius=theme.px(8), border_top_right_radius=theme.px(8))
-        pygame.draw.rect(screen, PANEL_BORDER, card, width=1, border_radius=theme.px(8))
+        radius = theme.px(8)
+        blit_card_bg(screen, card, radius)
+        blit_hbar(screen, accent_asset, pygame.Rect(card.left, card.top, card.width, theme.px(4)))
+        pygame.draw.rect(screen, PANEL_BORDER, card, width=1, border_radius=radius)
         draw_text(screen, value_font, value, (card.centerx, card.top + theme.px(16)), accent, anchor="midtop")
         draw_text(screen, label_font, label, (card.centerx, card.top + theme.px(58)), TEXT_SECONDARY, anchor="midtop")
 
 
 def build_mockup(logo_path: str | None = None) -> pygame.Surface:
     pygame.init()
+    pygame.display.set_mode((1, 1))  # necessário para `.convert_alpha()` funcionar sob SDL dummy
     theme = Theme(W, H)
     screen = pygame.Surface((theme.width, theme.height))
     screen.fill(BG)
 
-    # -- proporções de zona pedidas: cabeçalho ~9%, último resultado ~22%, histórico ~42%,
-    # estatísticas ~16%, o resto vira margens/gaps entre zonas.
     header_h = theme.px(round(H * 0.09))
     last_h = theme.px(round(H * 0.22))
-    hist_h = theme.px(round(H * 0.42))
     stats_h = theme.px(round(H * 0.16))
     gap = theme.px(14)
 
@@ -366,16 +365,14 @@ def build_mockup(logo_path: str | None = None) -> pygame.Surface:
     center_col = pygame.Rect(col_frio_w, body_top, col_center_w, body_bottom - body_top)
     quente_col = pygame.Rect(col_frio_w + col_center_w, body_top, col_quente_w, body_bottom - body_top)
 
-    # FRIO e QUENTE começam na MESMA altura (`body_top`) -- garante que as três colunas comecem
-    # "praticamente na mesma altura", como pedido. QUENTE fica mais alto que FRIO por causa da
-    # logo -- mesmo padrão da referência (o card não é esticado artificialmente pra compensar).
     frio_entries = [(9, 41), (3, 38), (28, 36), (14, 33), (31, 30)]
-    draw_side_card(screen, theme, frio_col, body_top, "FRIO", "GIROS SEM SAIR", CYAN, "snowflake",
-                    frio_entries, "GIROS", logo_path=None)
+    draw_side_card(screen, theme, frio_col, body_top, "FRIO", "GIROS SEM SAIR", "accent_cold.png",
+                    "cold_icon.png", frio_entries, "GIROS", "rank_ring_cold.png", show_logo=False)
 
     quente_entries = [(7, 9), (23, 8), (0, 7), (16, 6), (34, 5)]
-    draw_side_card(screen, theme, quente_col, body_top, "QUENTE", "OCORRÊNCIAS", RED, "flame",
-                    quente_entries, "VEZES", show_logo=True, logo_path=logo_path, logo_zone_h=theme.px(320))
+    draw_side_card(screen, theme, quente_col, body_top, "QUENTE", "OCORRÊNCIAS", "accent_hot.png",
+                    "hot_icon.png", quente_entries, "VEZES", "rank_ring_hot.png",
+                    show_logo=True, logo_path=logo_path, logo_zone_h=theme.px(320))
 
     last_rect = pygame.Rect(center_col.left + theme.px(8), last_rect_full.top,
                              center_col.width - theme.px(16), last_h)
@@ -393,6 +390,10 @@ def main() -> None:
     parser.add_argument("--out", default=str(Path(__file__).resolve().parent / "mockup_output.png"))
     parser.add_argument("--logo", default=None, help="Caminho opcional de uma logo real (PNG) para pré-visualizar.")
     args = parser.parse_args()
+
+    if not ASSETS_DIR.exists():
+        print(f"assets ausentes em {ASSETS_DIR} -- rode `python tools/build_ui_assets.py` primeiro.")
+        sys.exit(1)
 
     surface = build_mockup(logo_path=args.logo)
     pygame.image.save(surface, args.out)
