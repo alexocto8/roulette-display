@@ -1,19 +1,23 @@
 """Mockup ANIMADO (não estático) da nova tela de revelação pós-giro -- ainda na fase
 DESIGN -> MOCKUP -> APROVAÇÃO -> CÓDIGO, nenhuma linha de `app/`/`main.py` tocada.
 
-Sequência pedida pelo cliente (rodada 2, substitui o timing "tudo simultâneo em 4s" da rodada
-anterior):
-  1. Logo: zoom/splash MUITO rápido (0.2s), segura 2s NA TELA SOZINHO (roleta/número/badges ainda
-     não apareceram), some com fade de transparência em 0.3s (fase do logo = 2.5s).
-  2. Só DEPOIS do logo sumir, roleta + número + badges entram juntos com um fade-in de 0.3s.
-  3. No mesmo intervalo de 0.3s do fade-in, a roleta (que já vinha girando rápido, só que
-     invisível) DESACELERA até parar -- termina parada exatamente quando tudo fica 100% visível.
-  4. Número centralizado na tela (vertical E horizontal), badges empilhados embaixo dele,
-     diâmetro >= 70% maior que o badge da rodada anterior (era 520px -> agora 900px, +73%).
-  5. Depois de parado, o número fica na tela por mais 5s com um efeito de pulsar (leve variação
-     de escala) + glow dourado na borda que respira junto.
-
-Fundo: o MESMO da tela base (`background.png`) o tempo todo, sem trocar de cor/tema.
+Sequência pedida pelo cliente (rodada 3):
+  0. Transição: fade in de 0.3s entrando nessa animação a partir da TELA PRINCIPAL de verdade
+     (crossfade com `mockup_ui.build_mockup()`, não um fade pro preto), e fade out de 0.3s
+     saindo de volta pra ela no final.
+  1. Logo: mesma sequência de zoom/segura/some da rodada anterior, só que com o TEMPO TOTAL
+     DOBRADO (0.2/2.0/0.3s -> 0.4/4.0/0.6s = 5.0s de fase do logo).
+  2. Só depois do logo sumir, roleta + número + badges entram juntos com fade-in de 0.3s.
+  3. A roleta pode continuar girando à vontade depois disso -- ela só desacelera e para nos
+     ÚLTIMOS 2 segundos da animação inteira (não mais sincronizada com o fade-in do número).
+  4. Círculo/aro do número IGUAIS ao "ÚLTIMO RESULTADO" do painel principal (mesmo asset
+     `result_badge_*.png`, bisel grosso + halo duplo) -- volta a manter o padrão visual da tela
+     principal (rodada anterior tinha trocado por um anel fino + número transbordando; o cliente
+     pediu de volta o padrão oficial). Número redimensionado pra caber DENTRO do círculo, sem
+     exceder (igual ao painel principal), mas o diâmetro do círculo em si continua >= 70% maior
+     que o badge "antigo" (520px -> 900px).
+  5. Número exibido por 8s (era 5s), pulsando + glow dourado na borda o tempo todo dessa janela.
+  6. Degradê de 70%->0% escuro, esquerda->centro da tela: sem mudança (já era assim).
 
 Gera uma sequência de PNGs + compila em MP4 via ffmpeg (só ferramenta de pré-visualização --
 `ffmpeg` não é dependência do produto, só deste script de mockup) pra dar pra avaliar o TIMING de
@@ -40,26 +44,33 @@ import pygame
 from app.ui.theme import CYAN, RED, GREEN, ORANGE, Theme
 from tools.mockup_ui import (
     ASSETS_DIR, PROJECT_LOGO, OFF_WHITE, color_of, load_asset, asset_scaled,
-    blit_card_bg, draw_text,
+    blit_card_bg, blit_outlined, draw_text, build_mockup,
 )
 
 W, H = 1080, 1920
 
-# -- fase 1: logo sozinho ---------------------------------------------------------------------
-LOGO_ZOOM_S = 0.2
-LOGO_HOLD_S = 2.0  # era 1.0s -- pedido explícito
-LOGO_FADE_S = 0.3
-LOGO_END_S = LOGO_ZOOM_S + LOGO_HOLD_S + LOGO_FADE_S  # 2.5s
+# -- fase 0: crossfade de entrada/saída com a tela principal ----------------------------------
+GLOBAL_FADE_S = 0.3
 
-# -- fase 2: roleta/número/badges entram juntos, roleta desacelera até parar ------------------
+# -- fase 1: logo sozinho (tempo total DOBRADO -- pedido explícito) ---------------------------
+LOGO_ZOOM_S = 0.4
+LOGO_HOLD_S = 4.0
+LOGO_FADE_S = 0.6
+LOGO_END_S = LOGO_ZOOM_S + LOGO_HOLD_S + LOGO_FADE_S  # 5.0s
+
+# -- fase 2: roleta/número/badges entram juntos ------------------------------------------------
 REVEAL_FADE_S = 0.3
-REVEAL_END_S = LOGO_END_S + REVEAL_FADE_S  # 2.8s -- tudo 100% visível, roda parada
+REVEAL_END_S = LOGO_END_S + REVEAL_FADE_S  # 5.3s -- tudo 100% visível
 
-# -- fase 3: número parado, pulsando, por mais 5s ----------------------------------------------
-HOLD_S = 5.0
-TOTAL_S = REVEAL_END_S + HOLD_S  # 7.8s
+# -- fase 3: número exibido, pulsando, por 8s ---------------------------------------------------
+NUMBER_DISPLAY_S = 8.0
+TOTAL_S = REVEAL_END_S + NUMBER_DISPLAY_S  # 13.3s
 
+# -- roleta: gira livre, só desacelera/para nos ÚLTIMOS 2s da animação inteira -----------------
 WHEEL_SPIN_DEG_S = 480.0  # rápido, ~1.3 voltas/segundo -- "igual a roleta do jogo"
+WHEEL_DECEL_S = 2.0
+WHEEL_DECEL_START_S = TOTAL_S - WHEEL_DECEL_S  # 11.3s
+
 PULSE_PERIOD_S = 1.2
 
 
@@ -69,8 +80,8 @@ def ease_out_cubic(t: float) -> float:
 
 
 def build_gradient_overlay(theme: Theme) -> pygame.Surface:
-    """70% escuro -> 0% escuro, cobrindo a metade ESQUERDA da tela (onde a roleta gira) --
-    calculado uma única vez, reutilizado em todo frame."""
+    """70% escuro -> 0% escuro, esquerda -> CENTRO da tela (metade esquerda) -- sem mudança
+    pedida nesta rodada, só reconfirmado. Calculado uma única vez, reutilizado em todo frame."""
     half_w = theme.width // 2
     grad = pygame.Surface((half_w, theme.height), pygame.SRCALPHA)
     max_alpha = int(255 * 0.70)
@@ -89,26 +100,22 @@ def build_wheel_base(theme: Theme) -> tuple[pygame.Surface, tuple[float, float]]
 
 
 def wheel_angle(t: float) -> float:
-    """Continua girando (rápido) o tempo todo, mesmo enquanto invisível durante a fase do logo --
-    quando a fase 2 começa, desacelera de velocidade total até ZERO ao longo de `REVEAL_FADE_S`
-    (desaceleração linear na VELOCIDADE, o que dá uma curva suave na posição), terminando parada
-    exatamente no ângulo em que ficou -- nunca mais se move depois disso."""
-    if t <= LOGO_END_S:
+    """Gira à velocidade total o tempo todo (mesmo enquanto ainda invisível, antes do fade-in) --
+    só desacelera de velocidade total até ZERO ao longo de `WHEEL_DECEL_S`, nos últimos 2s da
+    animação INTEIRA (não mais atrelada ao fade-in do número) -- termina parada exatamente no
+    fim, nunca mais se move depois."""
+    if t <= WHEEL_DECEL_START_S:
         return -(t * WHEEL_SPIN_DEG_S) % 360
-    base = LOGO_END_S * WHEEL_SPIN_DEG_S
-    if t >= REVEAL_END_S:
-        u = 1.0
-    else:
-        u = (t - LOGO_END_S) / REVEAL_FADE_S
+    u = min(1.0, (t - WHEEL_DECEL_START_S) / WHEEL_DECEL_S)
+    base = WHEEL_DECEL_START_S * WHEEL_SPIN_DEG_S
     # velocidade linear de WHEEL_SPIN_DEG_S -> 0 ao longo de `u`; posição = integral da velocidade
-    extra = WHEEL_SPIN_DEG_S * REVEAL_FADE_S * (u - u * u / 2)
+    extra = WHEEL_SPIN_DEG_S * WHEEL_DECEL_S * (u - u * u / 2)
     return -(base + extra) % 360
 
 
 def scene_alpha(t: float) -> int:
     """Roleta + gradiente + badge/número/pills só existem DEPOIS que o logo suma -- fade-in único
-    de `REVEAL_FADE_S`, tudo junto (renderizado numa camada à parte e com alpha aplicado nela,
-    não em cada elemento separadamente -- ver `render_frame`)."""
+    de `REVEAL_FADE_S`, tudo junto (renderizado numa camada à parte e com alpha aplicado nela)."""
     if t <= LOGO_END_S:
         return 0
     if t >= REVEAL_END_S:
@@ -117,9 +124,10 @@ def scene_alpha(t: float) -> int:
 
 
 def pulse_state(t: float) -> tuple[float, float]:
-    """Só pulsa depois que tudo termina de entrar E a roleta já está parada (`REVEAL_END_S`).
-    `scale` é a leve variação de tamanho do badge/número (~3.5%); `glow_t` (0..1) modula a
-    intensidade do glow dourado extra na borda, na mesma fase -- os dois "respiram" juntos."""
+    """Pulsa durante TODA a janela de exibição do número (`REVEAL_END_S` até o fim), não mais
+    atrelado à roleta ter parado (agora ela só para bem depois, nos últimos 2s). `scale` é a leve
+    variação de tamanho do badge/número (~3.5%); `glow_t` (0..1) modula a intensidade do glow
+    dourado extra na borda, respirando junto."""
     if t < REVEAL_END_S:
         return 1.0, 0.0
     phase = 2 * math.pi * (t - REVEAL_END_S) / PULSE_PERIOD_S
@@ -134,36 +142,29 @@ def draw_wheel(screen, wheel_base: pygame.Surface, center: tuple[float, float], 
     screen.blit(rotated, rect)
 
 
-def draw_number_dropshadow(screen, font, text, center, fill, shadow, offset) -> None:
-    """Numeral com uma cópia escura duplicada, deslocada pra baixo-direita, por BAIXO da cópia
-    branca -- efeito "extrudado/adesivo" do print de referência do cliente."""
-    shadow_surf = font.render(text, True, shadow)
-    screen.blit(shadow_surf, shadow_surf.get_rect(center=(center[0] + offset, center[1] + offset)))
-    fill_surf = font.render(text, True, fill)
-    screen.blit(fill_surf, fill_surf.get_rect(center=center))
-
-
 def draw_result_badge(screen, theme: Theme, number: int, pulse_scale: float, glow_t: float) -> None:
-    """Número centralizado na tela (vertical E horizontal -- pedido explícito, saiu do
-    deslocamento pra direita da rodada anterior), diâmetro-base 70%+ maior que a rodada anterior
-    (520px -> 900px), badges empilhados embaixo dele. Durante o "hold" final, `pulse_scale`
-    (leve respiração de tamanho) e `glow_t` (halo dourado extra, mais/menos intenso) animam o
-    conjunto -- fora dessa fase os dois vêm neutros (1.0 / 0.0) e não mudam nada visualmente."""
+    """Círculo/aro IGUAIS ao "ÚLTIMO RESULTADO" do painel principal (`result_badge_*.png`, bisel
+    grosso + halo duplo) -- pedido explícito de voltar a manter o padrão visual, em vez do anel
+    fino + número transbordando da rodada anterior. Número dimensionado pra caber DENTRO do
+    círculo (mesma proporção `diameter * 0.76` do painel principal), sem exceder. Diâmetro-base
+    do círculo continua 900px (>= 70% maior que os 520px da versão "antiga"). Centralizado na
+    tela (vertical e horizontal), badges empilhados embaixo usando a MESMA fórmula de espaçamento
+    do painel principal (`diameter * 0.60 + 34px`)."""
     color = color_of(number)
-    badge_asset = {"red": "reveal_badge_red.png", "black": "reveal_badge_black.png",
-                   "green": "reveal_badge_green.png"}[color]
+    badge_asset = {"red": "result_badge_red.png", "black": "result_badge_black.png",
+                   "green": "result_badge_green.png"}[color]
 
     base_diameter = theme.px(900)  # era 520 -- +73%, acima do mínimo de +70% pedido
     diameter = round(base_diameter * pulse_scale)
-    badge_size = int(diameter * 1.80)  # já inclui a folga do glow largo
+    badge_size = int(diameter * 1.60)  # mesma proporção do painel principal (inclui halo)
     cx, cy = theme.width // 2, theme.height // 2  # centralizado vertical E horizontal
 
-    glow_size = int(base_diameter * 2.6)
+    glow_size = int(base_diameter * 2.2)
     glow = asset_scaled("reveal_glow_blue.png", (glow_size, glow_size))
     screen.blit(glow, (cx - glow_size // 2, cy - glow_size // 2))
 
     if glow_t > 0:
-        pulse_glow_size = int(diameter * 1.55)
+        pulse_glow_size = int(diameter * 1.30)
         pulse_glow = asset_scaled("pulse_glow_gold.png", (pulse_glow_size, pulse_glow_size)).copy()
         pulse_glow.set_alpha(int(70 + 160 * glow_t))
         screen.blit(pulse_glow, (cx - pulse_glow_size // 2, cy - pulse_glow_size // 2))
@@ -171,10 +172,8 @@ def draw_result_badge(screen, theme: Theme, number: int, pulse_scale: float, glo
     badge = asset_scaled(badge_asset, (badge_size, badge_size))
     screen.blit(badge, (cx - badge_size // 2, cy - badge_size // 2))
 
-    num_font = theme.font(int(diameter * 1.30), True)
-    shadow_tone = {"red": (60, 4, 2), "black": (5, 5, 6), "green": (2, 45, 22)}[color]
-    draw_number_dropshadow(screen, num_font, str(number), (cx, cy), fill=OFF_WHITE,
-                            shadow=shadow_tone, offset=theme.px(10))
+    num_font = theme.font(int(diameter * 0.76), True)  # cabe dentro do círculo, igual ao painel principal
+    blit_outlined(screen, num_font, str(number), (cx, cy), fill=OFF_WHITE, outline=(0, 0, 0), outline_px=0)
 
     tags = [("PRETO" if color == "black" else "VERMELHO" if color == "red" else "ZERO",
              OFF_WHITE if color == "black" else RED if color == "red" else GREEN)]
@@ -188,7 +187,7 @@ def draw_result_badge(screen, theme: Theme, number: int, pulse_scale: float, glo
     pill_w = theme.px(340)
     pill_h = theme.px(72)
     pill_gap = theme.px(16)
-    tag_y = cy + int(base_diameter * 0.5) + theme.px(56)
+    tag_y = cy + int(base_diameter * 0.60) + theme.px(34)  # mesma fórmula do painel principal
     for label, tcolor in tags:
         pill = pygame.Rect(cx - pill_w // 2, tag_y, pill_w, pill_h)
         blit_card_bg(screen, pill, theme.px(20))
@@ -198,9 +197,9 @@ def draw_result_badge(screen, theme: Theme, number: int, pulse_scale: float, glo
 
 
 def draw_logo_splash(screen, theme: Theme, logo_raw: pygame.Surface, t: float) -> None:
-    """Zoom/splash: cresce da posição atual (pequena, centralizada -- não há um logo persistente
-    em outro lugar da cena base pra "crescer a partir dele") até o tamanho de destaque em 0.2s
-    (ease-out, sensação de "pop" rápido), segura 2s sozinho na tela, some com fade em 0.3s."""
+    """Zoom/splash: cresce da posição atual (pequena, centralizada) até o tamanho de destaque em
+    `LOGO_ZOOM_S` (ease-out), segura `LOGO_HOLD_S` sozinho na tela, some com fade em
+    `LOGO_FADE_S` -- os três tempos dobrados nesta rodada em relação à anterior."""
     if t >= LOGO_END_S:
         return
 
@@ -226,7 +225,9 @@ def draw_logo_splash(screen, theme: Theme, logo_raw: pygame.Surface, t: float) -
     screen.blit(scaled, rect)
 
 
-def render_frame(theme, bg, wheel_base, wheel_center, gradient, logo_raw, number, t) -> pygame.Surface:
+def render_reveal_content(theme, bg, wheel_base, wheel_center, gradient, logo_raw, number, t) -> pygame.Surface:
+    """A animação de revelação em si (sem o crossfade de entrada/saída), opaca -- o crossfade com
+    a tela principal é aplicado por cima disso em `render_frame`."""
     screen = pygame.Surface((theme.width, theme.height))
     screen.blit(bg, (0, 0))  # fundo do layout base -- igual durante e depois da cena, sem trocar
 
@@ -241,6 +242,27 @@ def render_frame(theme, bg, wheel_base, wheel_center, gradient, logo_raw, number
         screen.blit(reveal_layer, (0, 0))
 
     draw_logo_splash(screen, theme, logo_raw, t)
+    return screen
+
+
+def render_frame(theme, main_screen, bg, wheel_base, wheel_center, gradient, logo_raw, number, t) -> pygame.Surface:
+    """Crossfade de 0.3s ENTRANDO a partir da tela principal de verdade (não um fade pro preto) e
+    de 0.3s SAINDO de volta pra ela no final -- pedido explícito ("transitar entre essa animação
+    e a tela principal")."""
+    content = render_reveal_content(theme, bg, wheel_base, wheel_center, gradient, logo_raw, number, t)
+
+    if t < GLOBAL_FADE_S:
+        blend = t / GLOBAL_FADE_S
+    elif t > TOTAL_S - GLOBAL_FADE_S:
+        blend = (TOTAL_S - t) / GLOBAL_FADE_S
+    else:
+        blend = 1.0
+    blend = max(0.0, min(1.0, blend))
+
+    screen = pygame.Surface((theme.width, theme.height))
+    screen.blit(main_screen, (0, 0))
+    content.set_alpha(round(255 * blend))
+    screen.blit(content, (0, 0))
     return screen
 
 
@@ -259,6 +281,7 @@ def main() -> None:
     pygame.display.set_mode((1, 1))
     theme = Theme(W, H)
 
+    main_screen = build_mockup()  # tela principal DE VERDADE, pro crossfade de entrada/saída
     bg = asset_scaled("background.png", (theme.width, theme.height))
     wheel_base, wheel_center = build_wheel_base(theme)
     gradient = build_gradient_overlay(theme)
@@ -271,13 +294,14 @@ def main() -> None:
     n_frames = round(TOTAL_S * args.fps)
     for i in range(n_frames):
         t = i / args.fps
-        frame = render_frame(theme, bg, wheel_base, wheel_center, gradient, logo_raw, args.number, t)
+        frame = render_frame(theme, main_screen, bg, wheel_base, wheel_center, gradient, logo_raw, args.number, t)
         pygame.image.save(frame, str(frames_dir / f"frame_{i:04d}.png"))
 
     mp4_path = out_dir / "reveal_preview.mp4"
     subprocess.run(
         ["ffmpeg", "-y", "-framerate", str(args.fps), "-i", str(frames_dir / "frame_%04d.png"),
-         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(mp4_path)],
+         "-c:v", "libx264", "-profile:v", "baseline", "-level", "3.0",
+         "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(mp4_path)],
         check=True, capture_output=True,
     )
     print(f"{n_frames} frames em {frames_dir}")
