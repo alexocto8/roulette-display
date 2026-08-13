@@ -5,8 +5,8 @@ roulette_id: 1
 
 history_size: 15
 statistics_window: 300
-hot_numbers_count: 3
-cold_numbers_count: 3
+hot_numbers_count: 5
+cold_numbers_count: 5
 
 currency: "R$"
 min_bet: "5,00"
