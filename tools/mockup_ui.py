@@ -114,7 +114,7 @@ def blit_card_bg(screen, rect: pygame.Rect, radius: int) -> None:
 def draw_fading_title(screen, theme: Theme, text, y, rect: pygame.Rect, color=TEXT_SECONDARY) -> None:
     """Título com linhas de fade dos dois lados: "── ESTATÍSTICAS ──" -- pedido explícito, usando
     o mesmo asset de linha com gradiente (`separator_fade.png`) espelhado à esquerda."""
-    font = theme.font(28, True)
+    font = theme.font(32, True)
     label = draw_text(screen, font, text, (rect.centerx, y), color, anchor="midtop")
     gap = theme.px(18)
     line_w = (rect.width - label.width) // 2 - gap * 2
@@ -127,27 +127,26 @@ def draw_fading_title(screen, theme: Theme, text, y, rect: pygame.Rect, color=TE
 
 
 def draw_header(screen, theme: Theme, header_h: int) -> None:
-    """Os dois cards de limite ficam JUNTOS, no lado esquerdo (não espalhados nas duas pontas da
-    tela), tamanho fixo ~180x105 (proporção pedida explicitamente) -- não um tamanho variável
-    calculado só a partir do texto, que ficava pequeno/errado demais."""
-    indicator_h = theme.px(24)
+    """APOSTA MÍN. no canto esquerdo, APOSTA MÁX. no canto direito -- cada uma no seu canto (não
+    mais agrupadas), com mais destaque (fonte maior, borda na cor do valor) -- pedido explícito."""
+    indicator_h = theme.px(26)
     card_top = indicator_h
-    card_w, card_h = theme.px(200), min(header_h - indicator_h - theme.px(6), theme.px(112))
-    label_font, value_font = theme.font(22, True), theme.font(42, True)
+    card_w, card_h = theme.px(232), min(header_h - indicator_h - theme.px(6), theme.px(128))
+    label_font, value_font = theme.font(26, True), theme.font(50, True)
 
-    x = theme.px(20)
-    for label, value in (("APOSTA MÍN.", "R$ 5,00"), ("APOSTA MÁX.", "R$ 500,00")):
-        rect = pygame.Rect(x, card_top, card_w, card_h)
-        blit_card_bg(screen, rect, theme.px(8))
-        pygame.draw.rect(screen, PANEL_BORDER, rect, width=1, border_radius=theme.px(8))
-        draw_text(screen, label_font, label, (rect.centerx, rect.top + theme.px(13)), TEXT_SECONDARY, anchor="midtop")
-        draw_text(screen, value_font, value, (rect.centerx, rect.top + theme.px(40)), ORANGE, anchor="midtop")
-        x = rect.right + theme.px(14)
+    left_rect = pygame.Rect(theme.px(20), card_top, card_w, card_h)
+    right_rect = pygame.Rect(theme.width - theme.px(20) - card_w, card_top, card_w, card_h)
+    for rect, (label, value) in ((left_rect, ("APOSTA MÍN.", "R$ 5,00")),
+                                  (right_rect, ("APOSTA MÁX.", "R$ 500,00"))):
+        blit_card_bg(screen, rect, theme.px(10))
+        pygame.draw.rect(screen, ORANGE, rect, width=2, border_radius=theme.px(10))
+        draw_text(screen, label_font, label, (rect.centerx, rect.top + theme.px(15)), TEXT_SECONDARY, anchor="midtop")
+        draw_text(screen, value_font, value, (rect.centerx, rect.top + theme.px(46)), ORANGE, anchor="midtop")
 
-    dot_c = (theme.width - theme.px(18), theme.px(13))
-    pygame.draw.circle(screen, GREEN, dot_c, theme.px(5))
-    draw_text(screen, theme.font(18, True), "SISTEMA OK",
-              (dot_c[0] - theme.px(10), dot_c[1]), TEXT_MUTED, anchor="midright")
+    dot_c = (theme.width // 2, theme.px(15))
+    pygame.draw.circle(screen, GREEN, dot_c, theme.px(6))
+    draw_text(screen, theme.font(19, True), "SISTEMA OK",
+              (dot_c[0] - theme.px(12), dot_c[1]), TEXT_MUTED, anchor="midright")
 
     blit_hbar(screen, "accent_gold_glow.png", pygame.Rect(0, header_h - theme.px(10), theme.width, theme.px(20)))
     blit_hbar(screen, "accent_gold.png", pygame.Rect(0, header_h - 2, theme.width, 3))
@@ -178,27 +177,33 @@ def draw_side_panel(screen, theme: Theme, panel_rect: pygame.Rect,
     blit_hbar(screen, accent_asset, pygame.Rect(panel_rect.left, panel_rect.top, panel_rect.width, theme.px(4)))
     pygame.draw.rect(screen, PANEL_BORDER, panel_rect, width=1, border_radius=radius)
 
-    y = panel_rect.top + theme.px(22)
-    icon_size = theme.px(38)
+    y = panel_rect.top + theme.px(24)
+    title_font = theme.font(44, True)
+    subtitle_font = theme.font(24, True)
+    title_r = draw_text(screen, title_font, title, (panel_rect.centerx, y), accent_color, anchor="midtop")
+
+    # Ícone centralizado verticalmente com o TÍTULO (não esticado até o subtítulo -- o subtítulo
+    # agora é bem mais largo, "MENOS/MAIS RECORRENTES", e um ícone descendo até a linha dele
+    # colidia visualmente com o texto). Ícone + título formam o par visual centralizado.
+    icon_size = theme.px(40)
     icon_img = asset_scaled(icon_asset, (icon_size, icon_size))
-    title_font = theme.font(40, True)
-    title_w = title_font.size(title)[0]
-    icon_x = panel_rect.centerx - title_w // 2 - icon_size - theme.px(8)
-    screen.blit(icon_img, (icon_x, y - theme.px(2)))
-    draw_text(screen, title_font, title, (panel_rect.centerx + theme.px(8), y), accent_color, anchor="midtop")
-    y += theme.px(46)
-    draw_text(screen, theme.font(22, True), subtitle, (panel_rect.centerx, y), TEXT_SECONDARY, anchor="midtop")
-    y += theme.px(30)
+    icon_x = panel_rect.centerx - title_r.width // 2 - icon_size - theme.px(10)
+    screen.blit(icon_img, (icon_x, title_r.centery - icon_size // 2))
+
+    y = title_r.bottom + theme.px(6)
+    subtitle_r = draw_text(screen, subtitle_font, subtitle, (panel_rect.centerx, y), TEXT_SECONDARY, anchor="midtop")
+
+    y = subtitle_r.bottom + theme.px(16)
     blit_hbar(screen, "separator_fade.png",
               pygame.Rect(panel_rect.left + theme.px(16), y, panel_rect.width - theme.px(32), 2))
-    y += theme.px(14)
+    y += theme.px(16)
 
-    row_h = theme.px(134)
-    rank_font = theme.font(28, True)
-    num_font = theme.font(36, True)
-    count_font = theme.font(42, True)
-    unit_font = theme.font(19, True)
-    badge_d = theme.px(70)
+    row_h = theme.px(148)
+    rank_font = theme.font(31, True)
+    num_font = theme.font(40, True)
+    count_font = theme.font(47, True)
+    unit_font = theme.font(21, True)
+    badge_d = theme.px(78)
     inset = theme.px(24)
     number_chip_asset = {"black": "number_chip_black.png", "red": "number_chip_red.png", "green": "number_chip_green.png"}
 
@@ -266,7 +271,7 @@ def draw_center(screen, theme: Theme, content_rect: pygame.Rect,
     altura fixa calculada sem olhar pro conteúdo real acima (bug da v6 inicial: um círculo maior
     empurrava as pills pra baixo do início "fixo" do histórico, causando sobreposição)."""
     y = content_rect.top + theme.px(10)
-    draw_text(screen, theme.font(42, True), "ÚLTIMO RESULTADO", (content_rect.centerx, y), OFF_WHITE, anchor="midtop")
+    draw_text(screen, theme.font(48, True), "ÚLTIMO RESULTADO", (content_rect.centerx, y), OFF_WHITE, anchor="midtop")
     y += theme.px(60)
 
     last_color = color_of(last_number)
@@ -289,9 +294,9 @@ def draw_center(screen, theme: Theme, content_rect: pygame.Rect,
         tags.append(("ÍMPAR" if last_number % 2 else "PAR", CYAN))
         tags.append(("MENOR" if last_number <= 18 else "MAIOR", ORANGE))
 
-    pill_font = theme.font(23, True)
+    pill_font = theme.font(26, True)
     pill_gap = theme.px(10)
-    pill_h = theme.px(38)
+    pill_h = theme.px(42)
     widths = [pill_font.size(label)[0] + theme.px(28) for label, _ in tags]
     px = content_rect.centerx - (sum(widths) + pill_gap * (len(tags) - 1)) // 2
     for (label, color), pw in zip(tags, widths):
@@ -313,7 +318,7 @@ def draw_center_history(screen, theme: Theme, rect: pygame.Rect, history: list[i
     pra ter mudado esse visual). Chips com o bisel dourado/cores cheias da v8; numerais SEMPRE
     off-white, independente da cor do chip."""
     y = rect.top
-    draw_text(screen, theme.font(28, True), "HISTÓRICO", (rect.centerx, y), TEXT_SECONDARY, anchor="midtop")
+    draw_text(screen, theme.font(32, True), "HISTÓRICO", (rect.centerx, y), TEXT_SECONDARY, anchor="midtop")
     y += theme.px(40)
 
     lane_x = {
@@ -336,7 +341,7 @@ def draw_center_history(screen, theme: Theme, rect: pygame.Rect, history: list[i
     for x in lane_x.values():
         pygame.draw.line(screen, (26, 30, 36), (x, lanes_top), (x, lanes_top + n_rows * row_h), 1)
 
-    hist_font = theme.font(int(d * 0.50), True)
+    hist_font = theme.font(int(d * 0.54), True)
     chip_size = int(d * 1.30)
     for i in range(n_rows):
         yy = lanes_top + i * row_h + row_h // 2
@@ -356,7 +361,7 @@ def draw_center_history(screen, theme: Theme, rect: pygame.Rect, history: list[i
     # "▲" via glifo Unicode não é seguro (a fonte padrão embutida do pygame não garante esse
     # glifo, igual ao problema já documentado com naipes ♦♣♥♠) -- desenhado como triângulo
     # vetorial ao lado do texto.
-    tag_font = theme.font(18, True)
+    tag_font = theme.font(20, True)
     label = "MAIS RECENTE"
     tri = theme.px(7)
     w = tag_font.size(label)[0] + theme.px(30) + tri * 2 + theme.px(6)
@@ -407,8 +412,8 @@ def draw_stats(screen, theme: Theme, rect: pygame.Rect) -> None:
     cell_w = theme.width / len(cells)
     gutter = theme.px(6)
     card_h = rect.bottom - cards_top
-    value_font = theme.font(43, True)
-    label_font = theme.font(21, True)
+    value_font = theme.font(48, True)
+    label_font = theme.font(23, True)
 
     for i, (label, pct, accent, accent_asset) in enumerate(cells):
         outer = pygame.Rect(int(i * cell_w), cards_top, int(cell_w) + 1, card_h)
@@ -450,12 +455,12 @@ def build_mockup(logo_path: str | None = None) -> pygame.Surface:
     center_col = pygame.Rect(col_frio_w, body_top, col_center_w, body_bottom - body_top)
 
     frio_entries = [(9, 41), (3, 38), (28, 36), (14, 33), (31, 30)]
-    draw_side_panel(screen, theme, frio_panel, "FRIO", "GIROS SEM SAIR", "accent_cold.png",
+    draw_side_panel(screen, theme, frio_panel, "FRIO", "MENOS RECORRENTES", "accent_cold.png",
                      "ambient_glow_blue.png", "cold_icon.png", frio_entries, "GIROS",
                      CYAN, show_logo=False)
 
     quente_entries = [(7, 9), (23, 8), (0, 7), (16, 6), (34, 5)]
-    draw_side_panel(screen, theme, quente_panel, "QUENTE", "OCORRÊNCIAS", "accent_hot.png",
+    draw_side_panel(screen, theme, quente_panel, "QUENTE", "MAIS RECORRENTES", "accent_hot.png",
                      "ambient_glow_red.png", "hot_icon.png", quente_entries, "VEZES",
                      RED, show_logo=True, logo_path=logo_path)
 
