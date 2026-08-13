@@ -14,6 +14,7 @@ from app.config import Config
 from app.database.db import Database
 from app.services.backup_service import BackupService
 from app.services.export_service import ExportService
+from app.services.retention_service import RetentionService
 from app.services.spin_service import SpinService
 from app.ui.admin import AdminPanel
 
@@ -30,7 +31,7 @@ def make_panel(tmp_path) -> AdminPanel:
     db.initialize()
     service = SpinService(db, config)
     return AdminPanel(config, service, BackupService(db, config), ExportService(db, config),
-                       config_path=str(tmp_path / "config.yaml"))
+                       RetentionService(db, config), config_path=str(tmp_path / "config.yaml"))
 
 
 def key_event(key, unicode=""):

@@ -7,8 +7,11 @@ Design choices driven by "must survive a power loss on a Raspberry Pi 3 running 
 - synchronous=FULL: every commit is fsync'd before we consider a spin "saved". Write volume here
   is one row roughly every 30-60 seconds (a human dealing a wheel), so the fsync cost is
   irrelevant to performance and buys real durability.
-- Undo is a soft delete (deleted=1), never a hard DELETE: the raw audit trail survives even after
-  an operator correction, which matters for a casino floor system.
+- Undo/correction is a soft delete (deleted=1), never a hard DELETE: the raw audit trail survives
+  even after an operator correction, which matters for a casino floor system. The one deliberate
+  exception is data retention (`purge_older_than`): spins older than `config.data_retention_days`
+  are archived to CSV first, then hard-deleted, so a 24/7 table doesn't grow the database forever
+  (see app/services/retention_service.py and README "Limitação conhecida: histórico muito longo").
 - A single long-lived connection guarded by a threading.Lock. The UI is single-threaded today,
   but the lock costs nothing and saves a rewrite when a future REST API adds a second thread.
 """
@@ -403,6 +406,54 @@ class Database:
         with self._lock:
             row = self._conn.execute("SELECT name FROM roulettes WHERE id = ?", (roulette_id,)).fetchone()
         return row["name"] if row else ""
+
+    # -- Retenção de dados (30 dias por padrão) ----------------------------------
+
+    def count_spins_older_than(self, roulette_id: int, before_iso: str) -> int:
+        """Quantos giros (ativos OU já soft-deletados) têm `created_at` antes de `before_iso` —
+        usado pelo RetentionService pra decidir se vale a pena arquivar/purgar (não roda o
+        arquivamento à toa quando não há nada além do corte)."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*) AS c FROM spins WHERE roulette_id = ? AND created_at < ?",
+                (roulette_id, before_iso),
+            ).fetchone()
+        return row["c"]
+
+    def export_spins_older_than(self, roulette_id: int, before_iso: str, dest_path: str | Path) -> Path:
+        """Arquiva (exporta) os giros mais antigos que `before_iso` antes de serem purgados de
+        verdade — inclui os já soft-deletados (`status`) porque essa é a última chance de guardar
+        esse dado em algum lugar depois que `purge_spins_older_than` remover a linha do banco."""
+        dest = Path(dest_path)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        roulette_name = self.get_roulette_name(roulette_id)
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM spins WHERE roulette_id = ? AND created_at < ? ORDER BY id ASC",
+                (roulette_id, before_iso),
+            ).fetchall()
+        with open(dest, "w", newline="", encoding="utf-8") as fh:
+            writer = csv.writer(fh)
+            writer.writerow(["data", "hora", "numero", "cor", "mesa", "status"])
+            for row in rows:
+                dt = datetime.fromisoformat(row["timestamp"])
+                status = "removido_pelo_operador" if row["deleted"] else "ativo"
+                writer.writerow([dt.strftime("%Y-%m-%d"), dt.strftime("%H:%M:%S"), row["number"], row["color"],
+                                  roulette_name, status])
+        return dest
+
+    def purge_spins_older_than(self, roulette_id: int, before_iso: str) -> int:
+        """Remove de verdade (hard delete) giros com `created_at` antes de `before_iso` -- só deve
+        ser chamado depois de `export_spins_older_than` ter arquivado essas mesmas linhas em
+        algum lugar (ver RetentionService.enforce_retention). Não mexe em `spin_audit`/`audit_log`:
+        a trilha de auditoria (muito menor, e com cadeia de hash no caso de `audit_log`) continua
+        íntegra mesmo depois que o giro em si já foi purgado."""
+        with self._lock:
+            cursor = self._conn.execute(
+                "DELETE FROM spins WHERE roulette_id = ? AND created_at < ?", (roulette_id, before_iso)
+            )
+            self._conn.commit()
+        return cursor.rowcount
 
     def backup(self, dest_path: str | Path) -> Path:
         """Online-safe backup using SQLite's own backup API (does not require pausing writes)."""

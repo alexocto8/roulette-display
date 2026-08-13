@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import math
+import time
 
 import pygame
 
@@ -28,6 +29,7 @@ from app.database.db import Database
 from app.models import roulette_data
 from app.services.backup_service import BackupService
 from app.services.export_service import ExportService
+from app.services.retention_service import RetentionService
 from app.services.spin_service import DisplayState, SpinService
 from app.ui import sound
 from app.ui.admin import AdminPanel
@@ -127,6 +129,13 @@ _WATCHDOG_HEARTBEAT_MS = 8000
 # Checagem de saúde do banco (indicador visual, não o watchdog do systemd): intervalo folgado de
 # propósito — só precisa flagar "o SQLite parou de responder", não é uma métrica de performance.
 _HEALTH_CHECK_MS = 45000
+# Retenção de dados (30 dias por padrão, ver config.data_retention_days): checagem em SEGUNDOS de
+# relógio de verdade (`time.time()`), não `pygame.time.get_ticks()` -- os ticks do pygame são
+# inteiros de milissegundos que passam a exigir cuidado extra depois de ~24 dias de uptime contínuo
+# (exatamente o cenário de uma mesa 24/7), e essa checagem não precisa de precisão de frame de
+# jeito nenhum. `enforce_retention()` é idempotente (não faz nada se não há giro além do corte),
+# então checar a cada poucas horas é seguro e barato.
+_RETENTION_CHECK_S = 6 * 3600
 
 
 def _should_heartbeat(now: int, last: int, interval_ms: int) -> bool:
@@ -159,6 +168,7 @@ class RouletteDisplay:
         self.service = SpinService(db, config)
         self.backup_service = BackupService(db, config)
         self.export_service = ExportService(db, config)
+        self.retention_service = RetentionService(db, config)
 
         # Janela padrão de desenvolvimento também em retrato — é o layout que realmente importa.
         # `create_screen` também aplica `config.screen_rotation`, se configurado (ver
@@ -175,7 +185,8 @@ class RouletteDisplay:
         # desativa o som, nunca trava o boot (ver app/ui/sound.py).
         sound.ensure_ready()
 
-        self.admin = AdminPanel(config, self.service, self.backup_service, self.export_service)
+        self.admin = AdminPanel(config, self.service, self.backup_service, self.export_service,
+                                 self.retention_service)
         self.admin_open = False
         self.admin_fade = Tween(0.0, 0.0, 1)  # 0 = fechado, 1 = totalmente aberto
 
@@ -255,6 +266,7 @@ class RouletteDisplay:
         watchdog_service.ready()
         last_heartbeat = pygame.time.get_ticks()
         self._last_health_check = pygame.time.get_ticks()
+        self._last_retention_check = time.time()
         try:
             while self.running:
                 fps = self._current_fps()
@@ -277,6 +289,10 @@ class RouletteDisplay:
                 if _should_heartbeat(now, self._last_health_check, _HEALTH_CHECK_MS):
                     self._check_db_health()
                     self._last_health_check = now
+                wall_now = time.time()
+                if _should_heartbeat(wall_now, self._last_retention_check, _RETENTION_CHECK_S):
+                    self._enforce_retention()
+                    self._last_retention_check = wall_now
 
                 if self.admin.quit_requested:
                     self.running = False
@@ -567,6 +583,15 @@ class RouletteDisplay:
         except Exception:
             logger.exception("Checagem de saúde do banco falhou")
             self._db_health_ok = False
+
+    def _enforce_retention(self) -> None:
+        """Chamada periodicamente (`_RETENTION_CHECK_S`), nunca por frame. Uma falha aqui (disco
+        cheio na hora de exportar o arquivo, por exemplo) não pode derrubar o painel -- só fica no
+        log, e a tentativa seguinte (algumas horas depois) tenta de novo."""
+        try:
+            self.retention_service.enforce_retention()
+        except Exception:
+            logger.exception("Retenção de dados falhou")
 
     # -- rendering ---------------------------------------------------------------
 

@@ -264,8 +264,9 @@ corrompe a configuração).
 
 Principais campos: `casino_name`, `roulette_name`, `roulette_id`, `history_size`,
 `statistics_window`, `hot_numbers_count`, `cold_numbers_count`, `currency`, `min_bet`, `max_bet`,
-`fullscreen`, `admin_pin`, `undo_confirm_seconds`, `backup_retention_count`, `license_path`,
-`license_state_path`, caminhos de banco/logs/assets/backups/exports.
+`fullscreen`, `admin_pin`, `undo_confirm_seconds`, `backup_retention_count`,
+`data_retention_days` (padrão 30 — ver seção 8, "Limitação conhecida: histórico muito longo"),
+`license_path`, `license_state_path`, caminhos de banco/logs/assets/backups/exports.
 
 `currency`/`min_bet`/`max_bet` são só texto exibido em uma faixa fina abaixo do cabeçalho (ex.:
 "MÍNIMA: R$ 5,00 MÁXIMA: R$ 5.000,00") — não são validados como número nem usados em cálculo
@@ -441,12 +442,26 @@ correto, e é praticamente instantâneo em um Pi 3 até algumas centenas de milh
 uma mesa em operação 24/7 por muitos meses sem nunca reiniciar a sessão, essa lista cresce sem
 limite e o recálculo a cada giro eventualmente fica perceptível — o teste de soak desta revisão
 (seção 14) mediu ~14ms com 100 mil giros ativos, então essa margem é bem confortável na prática.
-Mitigação recomendada em produção: exportar/arquivar periodicamente (`scripts/backup.sh` +
-"Reiniciar sessão atual" no admin) a cada temporada/mês. Se isso virar um problema real em escala,
-o próximo passo natural é o
-`SpinService` calcular "frio" a partir de um índice `last_seen` por número mantido incrementalmente
-em vez de escanear o histórico completo — não implementado agora para não adicionar complexidade
-sem necessidade comprovada.
+Se isso virar um problema real em escala, o próximo passo natural é o `SpinService` calcular
+"frio" a partir de um índice `last_seen` por número mantido incrementalmente em vez de escanear o
+histórico completo — não implementado agora para não adicionar complexidade sem necessidade
+comprovada.
+
+**Mitigação em produção — retenção automática de dados** (`app/services/retention_service.py`):
+giros com `created_at` mais antigo que `config.data_retention_days` (padrão **30 dias**) são
+arquivados em CSV (`exports_dir/arquivo-retencao-AAAAMMDD-HHMMSS.csv`, incluindo os já
+soft-deletados, com uma coluna `status` marcando cada um) e **removidos de verdade** da tabela
+`spins` (`Database.purge_spins_older_than` — a única exceção deliberada ao princípio de nunca
+fazer hard delete que rege o resto do banco, ver comentário no topo de `app/database/db.py`).
+`spin_audit`/`audit_log` nunca são tocados por essa política — a trilha de auditoria (bem menor, e
+com cadeia de hash no caso de `audit_log`) continua íntegra mesmo depois que o giro em si já foi
+purgado. Roda sozinha a cada `_RETENTION_CHECK_S` (6h) dentro do loop principal — checagem
+por relógio de parede (`time.time()`), não `pygame.time.get_ticks()`, que é medido em
+milissegundos e passaria a exigir cuidado extra depois de ~24 dias de uptime contínuo (exatamente
+o cenário que essa política existe para cobrir). `enforce_retention()` é idempotente (não faz
+nada se não há giro além do corte), então essa checagem periódica é barata mesmo rodando sozinha
+por meses. Também disponível como ação manual no admin ("Forçar limpeza de retenção agora"), para
+confirmar que a política está ativa sem esperar o ciclo automático.
 
 ## 9. Licenciamento
 

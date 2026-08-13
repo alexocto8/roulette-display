@@ -94,6 +94,10 @@ Back-office e infraestrutura:
   filtros, e verificação de integridade do log de auditoria (detecta se algum registro foi
   adulterado).
 - **Exportar resultados (CSV)**, **fazer backup do banco**, **importar backup**.
+- **Forçar limpeza de retenção agora**: o sistema já arquiva (exporta pra um arquivo CSV) e depois
+  remove automaticamente, a cada poucas horas, giros com mais de 30 dias — evita que o banco/disco
+  cresça sem limite numa mesa que roda 24/7 por muito tempo. Esse item só confirma que a política
+  está ativa na hora, sem esperar o ciclo automático.
 - Configuração de e-mail (SMTP: servidor, usuário, senha, destinatário, teste de envio) — para
   envio automático de relatórios.
 - Ver status de rede.

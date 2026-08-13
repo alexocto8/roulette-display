@@ -56,6 +56,13 @@ class Config:
     exports_dir: str = "data/exports"
     backup_retention_count: int = 30  # backups mais antigos que isso são apagados a cada novo backup
 
+    # Giros com mais de N dias são arquivados (exportados para CSV em `exports_dir`) e então
+    # removidos de verdade da tabela `spins` (hard delete, não soft-delete) — ver
+    # app/services/retention_service.py. Existe para uma mesa 24/7 não crescer sem limite (ver
+    # README, "Limitação conhecida: histórico muito longo"): o arquivo exportado preserva o dado
+    # pra auditoria futura, só a cópia "viva" que o app consulta é que é limpa.
+    data_retention_days: int = 30
+
     # Logo do cliente: arquivo final fica em `branding_dir/logo.png`; o operador copia o arquivo
     # de origem (USB/SCP) em `branding_dir/incoming/` antes de "Importar logo" no admin. Campo de
     # config (não uma constante fixa em app/ui/admin.py) principalmente para poder isolar em

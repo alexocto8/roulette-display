@@ -17,6 +17,7 @@ from app.config import Config, save_config
 from app.reports import branding
 from app.services.backup_service import BackupService
 from app.services.export_service import ExportService
+from app.services.retention_service import RetentionService
 from app.services import power_service
 from app.services.spin_service import SpinService
 from app.ui.theme import BG, GOLD, PANEL_BG, PANEL_BORDER, RED, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY, Theme
@@ -76,6 +77,7 @@ MENU_ITEMS_BY_CATEGORY: dict[str, list[tuple[str, str]]] = {
         ("export_csv", "Exportar resultados (CSV)"),
         ("backup", "Fazer backup do banco"),
         ("restore", "Importar backup"),
+        ("run_retention_now", "Forçar limpeza de retenção agora"),
         ("smtp_host", "SMTP: servidor"),
         ("smtp_username", "SMTP: usuário"),
         ("smtp_password", "SMTP: senha"),
@@ -124,11 +126,13 @@ _AUDIT_PAGE_SIZE = 10
 
 class AdminPanel:
     def __init__(self, config: Config, service: SpinService, backup_service: BackupService,
-                 export_service: ExportService, config_path: str = "config.yaml"):
+                 export_service: ExportService, retention_service: RetentionService,
+                 config_path: str = "config.yaml"):
         self.config = config
         self.service = service
         self.backup_service = backup_service
         self.export_service = export_service
+        self.retention_service = retention_service
         self.config_path = config_path
         # Cria uma vez, reaproveitada em todo `render()` (só o alpha muda por frame, via
         # `fill()`) — a resolução da tela não muda em runtime, então não há razão pra alocar um
@@ -394,6 +398,9 @@ class AdminPanel:
         elif action == "smtp_test":
             self.message = self._smtp_test_text()
             self.state = "message"
+        elif action == "run_retention_now":
+            self.message = self._run_retention_text()
+            self.state = "message"
         elif action == "network_status":
             self.message = self._network_status_text()
             self.state = "message"
@@ -443,6 +450,22 @@ class AdminPanel:
         except Exception as exc:
             logger.exception("Teste de envio SMTP falhou")
             return f"Falha no envio de teste: {exc}"
+
+    def _run_retention_text(self) -> str:
+        """Dispara a retenção na hora (o painel também faz isso sozinho a cada algumas horas, ver
+        `RouletteDisplay._enforce_retention`) -- útil pra confirmar que a política está ativa sem
+        esperar o ciclo automático."""
+        try:
+            purged = self.retention_service.enforce_retention()
+        except Exception as exc:
+            logger.exception("Limpeza de retenção manual falhou")
+            return f"Falha na limpeza de retenção: {exc}"
+        if purged == 0:
+            return f"Nenhum giro com mais de {self.config.data_retention_days} dias — nada para arquivar."
+        return (
+            f"{purged} giro(s) com mais de {self.config.data_retention_days} dias arquivados "
+            f"em '{self.config.exports_dir}' e removidos do banco."
+        )
 
     def _network_status_text(self) -> str:
         from app.delivery.network_status import get_network_status

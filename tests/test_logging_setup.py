@@ -43,6 +43,7 @@ def test_admin_pin_value_is_never_written_to_the_log_file(tmp_path):
     from app.database.db import Database
     from app.services.backup_service import BackupService
     from app.services.export_service import ExportService
+    from app.services.retention_service import RetentionService
     from app.services.spin_service import SpinService
     from app.ui.admin import AdminPanel
 
@@ -59,7 +60,7 @@ def test_admin_pin_value_is_never_written_to_the_log_file(tmp_path):
     db.initialize()
     service = SpinService(db, config)
     panel = AdminPanel(config, service, BackupService(db, config), ExportService(db, config),
-                        config_path=str(tmp_path / "config.yaml"))
+                        RetentionService(db, config), config_path=str(tmp_path / "config.yaml"))
     panel.state = "menu"
     panel._activate("admin_pin")  # entra no fluxo de troca de PIN (loga só o nome da ação)
     panel.edit_buffer = "9999"
