@@ -1,0 +1,10 @@
+# Regra de sudo mínima para rodar o serviço como um usuário dedicado não-root (ver README.md,
+# seção "Hardening opcional"). Sem isto, os botões "Reiniciar Raspberry Pi"/"Desligar Raspberry Pi"
+# do painel administrativo não funcionam quando o serviço não roda como root.
+#
+# Instalação (só necessária se você trocou User=root por User=roulette no .service):
+#   sudo install -m 0440 systemd/roulette-sudoers /etc/sudoers.d/roulette-power
+#   sudo visudo -c
+#
+# Escopo propositalmente restrito a exatamente dois comandos — nenhum acesso amplo a root.
+roulette ALL=(root) NOPASSWD: /usr/bin/systemctl reboot, /usr/bin/systemctl poweroff

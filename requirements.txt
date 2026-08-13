@@ -1,0 +1,25 @@
+# Pinned to major versions known to run well on Raspberry Pi 3 (armv7/aarch64, Raspberry Pi OS
+# Bullseye/Bookworm). See README.md "Escolha da stack" for why pygame was chosen over Qt/Electron.
+pygame-ce>=2.4,<3.0
+PyYAML>=6.0,<7.0
+
+# Verificação de licença (Ed25519). Tem wheel pré-compilada pra armv7/aarch64 nas versões recentes
+# do pip/Raspberry Pi OS — não exige compilar nada no Pi. Só a parte de VERIFICAÇÃO roda aqui; a
+# ferramenta que EMITE licenças (license-generator/) tem seu próprio requirements.txt separado.
+cryptography>=42.0,<44.0
+
+# Logo do cliente (validação/redimensionamento) e geração de relatório PDF. Escolhidos
+# deliberadamente por serem leves no Pi 3: fpdf2 é puro Python (sem Cairo/Pango/GTK como
+# weasyprint exigiria), Pillow tem wheel pré-compilada para armv7/aarch64. Gráficos do relatório
+# são desenhados com as primitivas do próprio fpdf2 (retângulos/linhas) em vez de puxar matplotlib
+# — mesma lógica já usada para os ícones da tela principal (app/ui/display.py), sem dependência
+# pesada só para barras/linhas simples.
+Pillow>=10.0,<12.0
+fpdf2>=2.7,<3.0
+
+# Opcional — só necessário se um recibo em impressora térmica ESC/POS for realmente configurado
+# (config.printer_type != NONE). Não instalado por padrão: a maioria das instalações não usa
+# impressora, e esta lib puxa pyusb (e, em algumas plataformas, exige libusb no sistema). O
+# import em app/delivery/printer_service.py é lazy — sem impressão configurada, esta linha nunca
+# precisa existir.
+# python-escpos>=3.0,<4.0

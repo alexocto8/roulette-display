@@ -1,0 +1,34 @@
+[Unit]
+Description=Roulette Display - Painel Eletronico de Roleta
+After=local-fs.target systemd-udev-settle.service
+Wants=systemd-udev-settle.service
+
+[Service]
+# Type=notify + WatchdogSec cobre o que Restart=always sozinho não cobre: um processo que trava
+# (não morre) nunca dispara Restart=always, porque pro systemd ele continua "rodando". Com
+# WatchdogSec, o app manda um pulso (app/services/watchdog_service.py) periodicamente; se parar de
+# mandar, o systemd mata e reinicia. READY=1 só é enviado depois do splash, com o painel já
+# desenhado — startup real, não só "processo existe".
+Type=notify
+WatchdogSec=30
+WorkingDirectory=__INSTALL_DIR__
+ExecStart=__INSTALL_DIR__/venv/bin/python3 __INSTALL_DIR__/main.py
+Restart=always
+RestartSec=3
+
+# KMSDRM: renderiza direto no /dev/dri, sem X11/desktop. Se a placa/driver não suportar,
+# troque para SDL_VIDEODRIVER=fbcon (ver README.md "Solução de problemas").
+Environment=SDL_VIDEODRIVER=kmsdrm
+Environment=SDL_AUDIODRIVER=dummy
+Environment=PYTHONUNBUFFERED=1
+
+StandardOutput=journal
+StandardError=journal
+
+# Roda como root para ter acesso direto ao DRM/KMS e a /dev/input/* sem precisar de sessão
+# logind/X11. É a opção mais robusta para um equipamento dedicado (kiosk). Para reduzir
+# privilégios veja README.md "Hardening opcional".
+User=root
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,31 @@
+# Configuração do painel de roleta. Editável aqui ou pelo menu de administração (CTRL+ALT+A).
+casino_name: "Jackpot Poker Club"
+roulette_name: "ROLETA 01"
+roulette_id: 1
+
+history_size: 15
+statistics_window: 300
+hot_numbers_count: 3
+cold_numbers_count: 3
+
+currency: "R$"
+min_bet: "5,00"
+max_bet: "5.000,00"
+
+fullscreen: true
+target_fps: 30
+idle_fps: 8
+hide_cursor: true
+
+admin_pin: "1234"
+undo_confirm_seconds: 4.0
+
+database_path: "data/roulette.db"
+logs_dir: "logs"
+assets_dir: "assets"
+backups_dir: "data/backups"
+exports_dir: "data/exports"
+
+log_level: "INFO"
+log_max_bytes: 2000000
+log_backup_count: 5
