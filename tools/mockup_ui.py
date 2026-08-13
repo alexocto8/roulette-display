@@ -155,7 +155,7 @@ def draw_header(screen, theme: Theme, header_h: int) -> None:
 
 def draw_side_panel(screen, theme: Theme, panel_rect: pygame.Rect,
                      title, subtitle, accent_asset: str, glow_asset: str, icon_asset: str,
-                     entries, unit, rank_ring_asset: str, accent_color,
+                     entries, unit, accent_color,
                      show_logo: bool = False, logo_path: str | None = None) -> None:
     """FRIO/QUENTE: painel de ALTURA COMPLETA (`panel_rect` já vem com a altura combinada de
     último resultado + histórico) -- correção principal desta rodada. O ranking ocupa o topo; o
@@ -194,22 +194,28 @@ def draw_side_panel(screen, theme: Theme, panel_rect: pygame.Rect,
     y += theme.px(12)
 
     row_h = theme.px(118)
-    rank_font = theme.font(18, True)
-    num_font = theme.font(64, True)
+    rank_font = theme.font(24, True)
+    num_font = theme.font(30, True)
     count_font = theme.font(36, True)
     unit_font = theme.font(16, True)
-    rank_d = theme.px(42)
+    badge_d = theme.px(60)
     inset = theme.px(24)
+    number_chip_asset = {"black": "number_chip_black.png", "red": "number_chip_red.png", "green": "number_chip_green.png"}
 
     for i, (num, count) in enumerate(entries):
         row = pygame.Rect(panel_rect.left, y, panel_rect.width, row_h)
-        rank_cx = row.left + inset + rank_d // 2
-        ring_img = asset_scaled(rank_ring_asset, (rank_d, rank_d))
-        screen.blit(ring_img, (rank_cx - rank_d // 2, row.centery - rank_d // 2))
-        draw_text(screen, rank_font, f"{i + 1}º", (rank_cx, row.centery), accent_color, anchor="center")
 
-        draw_text(screen, num_font, str(num), (rank_cx + rank_d // 2 + theme.px(16), row.centery),
-                  OFF_WHITE, anchor="midleft")
+        # Posição do ranking (1, 2, 3...) fica como TEXTO simples à esquerda, separado por hífen
+        # -- não mais dentro de um círculo (pedido explícito: só o NÚMERO da roleta em si é que
+        # deve estar dentro de um círculo, na cor real daquele número).
+        rank_r = draw_text(screen, rank_font, f"{i + 1} -", (row.left + inset, row.centery),
+                            accent_color, anchor="midleft")
+
+        badge_cx = rank_r.right + theme.px(14) + badge_d // 2
+        badge = asset_scaled(number_chip_asset[color_of(num)], (badge_d, badge_d))
+        screen.blit(badge, (badge_cx - badge_d // 2, row.centery - badge_d // 2))
+        blit_outlined(screen, num_font, str(num), (badge_cx, row.centery), fill=OFF_WHITE,
+                      outline=(0, 0, 0), outline_px=0)
 
         val_x = row.right - inset
         count_r = draw_text(screen, count_font, str(count), (val_x, row.centery - theme.px(11)),
@@ -444,12 +450,12 @@ def build_mockup(logo_path: str | None = None) -> pygame.Surface:
 
     frio_entries = [(9, 41), (3, 38), (28, 36), (14, 33), (31, 30)]
     draw_side_panel(screen, theme, frio_panel, "FRIO", "GIROS SEM SAIR", "accent_cold.png",
-                     "ambient_glow_blue.png", "cold_icon.png", frio_entries, "GIROS", "rank_ring_cold.png",
+                     "ambient_glow_blue.png", "cold_icon.png", frio_entries, "GIROS",
                      CYAN, show_logo=False)
 
     quente_entries = [(7, 9), (23, 8), (0, 7), (16, 6), (34, 5)]
     draw_side_panel(screen, theme, quente_panel, "QUENTE", "OCORRÊNCIAS", "accent_hot.png",
-                     "ambient_glow_red.png", "hot_icon.png", quente_entries, "VEZES", "rank_ring_hot.png",
+                     "ambient_glow_red.png", "hot_icon.png", quente_entries, "VEZES",
                      RED, show_logo=True, logo_path=logo_path)
 
     center_content = pygame.Rect(center_col.left + theme.px(8), center_col.top,

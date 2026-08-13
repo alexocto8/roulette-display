@@ -280,6 +280,50 @@ def make_card_gradient_tile(width, height, top, bottom) -> Image.Image:
     return img
 
 
+def make_simple_chip(diameter, fill, gold, shadow_alpha=90) -> Image.Image:
+    """Bolinha simples: sombra sutil -> preenchimento com a cor real (mesmo sombreamento discreto
+    do círculo principal) -> UMA borda fina dourada logo depois do limite da cor (sem bisel
+    grosso, sem halo/glow, sem anel duplo) -- pedido explícito: "não precisam ter a borda dourada
+    grossa, apenas borda fina dourada logo após o limite da cor". Usada tanto pros chips do
+    histórico quanto pro selo colorido de cada número em FRIO/QUENTE (mesmo asset, tamanhos
+    diferentes)."""
+    pad = int(diameter * 0.14)
+    canvas = diameter + pad * 2
+    img = Image.new("RGBA", (canvas * SS, canvas * SS), (0, 0, 0, 0))
+    cx = cy = canvas * SS / 2
+    r = diameter * SS / 2
+
+    shadow = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    ImageDraw.Draw(shadow).ellipse([cx - r, cy - r + SS * 2, cx + r, cy + r + SS * 2],
+                                    fill=(0, 0, 0, shadow_alpha))
+    shadow = shadow.filter(ImageFilter.GaussianBlur(radius=diameter * 0.035 * SS))
+    img.alpha_composite(shadow)
+
+    center_tone = _lerp(fill, (255, 255, 255), 0.06)
+    edge_tone = _lerp(fill, (0, 0, 0), 0.22)
+    fill_img = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    fd = ImageDraw.Draw(fill_img)
+    steps = 22
+    for i in range(steps, 0, -1):
+        t = i / steps
+        rr = r * t
+        color = _lerp(edge_tone, center_tone, 1 - t)
+        fd.ellipse([cx - rr, cy - rr, cx + rr, cy + rr], fill=(*color, 255))
+    img.alpha_composite(fill_img)
+
+    ring_w = max(1, int(SS * 2.2))
+    ImageDraw.Draw(img).ellipse([cx - r, cy - r, cx + r, cy + r], outline=(*gold, 255), width=ring_w)
+
+    hl = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    hl_w, hl_h = r * 1.0, r * 0.42
+    ImageDraw.Draw(hl).ellipse([cx - hl_w / 2, cy - r * 0.72, cx + hl_w / 2, cy - r * 0.72 + hl_h],
+                                fill=(255, 255, 255, 12))
+    hl = hl.filter(ImageFilter.GaussianBlur(radius=diameter * 0.03 * SS))
+    img.alpha_composite(hl)
+
+    return _down(img, (canvas, canvas))
+
+
 def make_background(width, height, base, center_tint) -> Image.Image:
     """Fundo com profundidade sutil: leve iluminação central + vignette discreto nos cantos.
     Pré-renderizado 1x -- em runtime custa um único `blit()` no lugar do `screen.fill()` flat que
@@ -355,9 +399,16 @@ def main() -> None:
     make_result_badge(380, fill=TRUE_BLACK, ring_tone=TRUE_BLACK, accent=GOLD, gold_halo=True, double_ring=True).save(OUT_DIR / "result_badge_black.png")
     make_result_badge(380, fill=GREEN, ring_tone=GREEN, accent=GOLD, gold_halo=True, double_ring=True).save(OUT_DIR / "result_badge_green.png")
 
-    make_result_badge(96, fill=RED, ring_tone=RED, accent=GOLD, gold_halo=True, shadow_alpha=90).save(OUT_DIR / "history_chip_red.png")
-    make_result_badge(96, fill=TRUE_BLACK, ring_tone=TRUE_BLACK, accent=GOLD, gold_halo=True, shadow_alpha=90).save(OUT_DIR / "history_chip_black.png")
-    make_result_badge(96, fill=GREEN, ring_tone=GREEN, accent=GOLD, gold_halo=True, shadow_alpha=90).save(OUT_DIR / "history_chip_green.png")
+    # Bolinhas simples (sem bisel grosso -- só uma borda fina dourada logo depois do limite da
+    # cor). Mesmo asset reaproveitado pros chips do histórico E pro selo colorido do número em
+    # cada linha de FRIO/QUENTE (mesmo estilo visual, tamanhos diferentes).
+    make_simple_chip(96, fill=RED, gold=GOLD).save(OUT_DIR / "history_chip_red.png")
+    make_simple_chip(96, fill=TRUE_BLACK, gold=GOLD).save(OUT_DIR / "history_chip_black.png")
+    make_simple_chip(96, fill=GREEN, gold=GOLD).save(OUT_DIR / "history_chip_green.png")
+
+    make_simple_chip(72, fill=RED, gold=GOLD).save(OUT_DIR / "number_chip_red.png")
+    make_simple_chip(72, fill=TRUE_BLACK, gold=GOLD).save(OUT_DIR / "number_chip_black.png")
+    make_simple_chip(72, fill=GREEN, gold=GOLD).save(OUT_DIR / "number_chip_green.png")
 
     make_accent_bar(420, 6, BLUE_DARK, BLUE_BRIGHT).save(OUT_DIR / "accent_cold.png")
     make_accent_bar(420, 6, RED_DARK, RED_BRIGHT).save(OUT_DIR / "accent_hot.png")
@@ -372,9 +423,6 @@ def main() -> None:
     make_accent_glow(1080, 3, GOLD).save(OUT_DIR / "accent_gold_glow.png")
 
     make_card_gradient_tile(8, 320, (16, 20, 26), (10, 13, 18)).save(OUT_DIR / "card_gradient.png")
-
-    make_rank_ring(38, BLUE).save(OUT_DIR / "rank_ring_cold.png")
-    make_rank_ring(38, RED).save(OUT_DIR / "rank_ring_hot.png")
 
     make_background(1080, 1920, base=(7, 10, 14), center_tint=(16, 20, 27)).save(OUT_DIR / "background.png")
     make_ambient_glow(420, BLUE_BRIGHT, alpha=40).save(OUT_DIR / "ambient_glow_blue.png")
