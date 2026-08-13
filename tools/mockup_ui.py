@@ -127,25 +127,25 @@ def draw_fading_title(screen, theme: Theme, text, y, rect: pygame.Rect, color=TE
 
 
 def draw_header(screen, theme: Theme, header_h: int) -> None:
-    """APOSTA MÍN. no canto esquerdo, APOSTA MÁX. no canto direito -- cada uma no seu canto (não
-    mais agrupadas), com mais destaque (fonte maior, borda na cor do valor) -- pedido explícito."""
-    indicator_h = theme.px(26)
-    card_top = indicator_h
-    card_w, card_h = theme.px(232), min(header_h - indicator_h - theme.px(6), theme.px(128))
-    label_font, value_font = theme.font(26, True), theme.font(50, True)
+    """APOSTA MÍN. no canto esquerdo, APOSTA MÁX. no canto direito, sem borda (só o fundo com
+    gradiente sutil do card) e fonte ainda maior -- pedido explícito. "SISTEMA OK" saiu do topo
+    (competia visualmente com os dois cards) e foi pro rodapé do próprio cabeçalho, discreto,
+    colado na linha dourada."""
+    card_top = theme.px(8)
+    card_w, card_h = theme.px(252), theme.px(148)
+    label_font, value_font = theme.font(30, True), theme.font(58, True)
 
     left_rect = pygame.Rect(theme.px(20), card_top, card_w, card_h)
     right_rect = pygame.Rect(theme.width - theme.px(20) - card_w, card_top, card_w, card_h)
     for rect, (label, value) in ((left_rect, ("APOSTA MÍN.", "R$ 5,00")),
                                   (right_rect, ("APOSTA MÁX.", "R$ 500,00"))):
         blit_card_bg(screen, rect, theme.px(10))
-        pygame.draw.rect(screen, ORANGE, rect, width=2, border_radius=theme.px(10))
-        draw_text(screen, label_font, label, (rect.centerx, rect.top + theme.px(15)), TEXT_SECONDARY, anchor="midtop")
-        draw_text(screen, value_font, value, (rect.centerx, rect.top + theme.px(46)), ORANGE, anchor="midtop")
+        draw_text(screen, label_font, label, (rect.centerx, rect.top + theme.px(16)), TEXT_SECONDARY, anchor="midtop")
+        draw_text(screen, value_font, value, (rect.centerx, rect.top + theme.px(52)), ORANGE, anchor="midtop")
 
-    dot_c = (theme.width // 2, theme.px(15))
+    dot_c = (theme.width - theme.px(22), header_h - theme.px(16))
     pygame.draw.circle(screen, GREEN, dot_c, theme.px(6))
-    draw_text(screen, theme.font(19, True), "SISTEMA OK",
+    draw_text(screen, theme.font(17, True), "SISTEMA OK",
               (dot_c[0] - theme.px(12), dot_c[1]), TEXT_MUTED, anchor="midright")
 
     blit_hbar(screen, "accent_gold_glow.png", pygame.Rect(0, header_h - theme.px(10), theme.width, theme.px(20)))
@@ -287,7 +287,11 @@ def draw_center(screen, theme: Theme, content_rect: pygame.Rect,
     num_font = theme.font(int(diameter * 0.76), True)
     blit_outlined(screen, num_font, str(last_number), (cx, cy), fill=OFF_WHITE, outline=(0, 0, 0), outline_px=0)
 
-    tag_y = cy + diameter // 2 + theme.px(26)
+    # O aro dourado se estende bem além do círculo preenchido (halo/bisel do asset) -- medir a
+    # folga a partir de `diameter//2` (a borda do preenchimento) subestimava o quanto o aro
+    # realmente ocupa, deixando as classificações quase coladas nele. `0.60*diameter` aproxima
+    # melhor a borda externa visível do aro.
+    tag_y = cy + int(diameter * 0.60) + theme.px(34)
     tags = [("PRETO" if last_color == "black" else "VERMELHO" if last_color == "red" else "ZERO",
              OFF_WHITE if last_color == "black" else RED if last_color == "red" else GREEN)]
     if last_number != 0:
@@ -330,7 +334,7 @@ def draw_center_history(screen, theme: Theme, rect: pygame.Rect, history: list[i
 
     lanes_top = y
     lanes_bottom = rect.bottom - theme.px(58)  # reserva espaço pro selo "MAIS RECENTE" abaixo
-    d = theme.px(66)
+    d = theme.px(76)  # +15% pedido explícito (era 66)
     row_h = int(d * 1.28)
     # Igual à regra real ("quantas linhas couberem"): nunca força mais linhas do que cabem no
     # espaço disponível -- forçar `len(history)` aqui foi o bug que empurrava o selo "MAIS
@@ -400,31 +404,58 @@ def draw_percent_ring(screen, center, radius, pct: float, color, bg) -> None:
 
 
 def draw_stats(screen, theme: Theme, rect: pygame.Rect) -> None:
+    """Reorganizado em GRUPOS (não mais 7 caixas soltas e idênticas) -- as três apostas de
+    "chance simples" da roleta são pares naturais que somam ~100% (ímpar/par, vermelho/preto,
+    menor/maior); mostrar cada par dentro de um único card, lado a lado com um divisor fino,
+    deixa esse contraste óbvio de bater o olho em vez de obrigar a comparar duas caixas
+    distantes. Zero fica sozinho no meio (mesma posição que ocupa numa mesa de roleta de
+    verdade), flanqueado pelos pares -- nenhuma categoria nova, só reagrupamento visual das
+    mesmas 7 categorias/percentuais de sempre."""
     draw_fading_title(screen, theme, "ESTATÍSTICAS", rect.top, rect)
-    cards_top = rect.top + theme.px(36)
-
-    cells = [
-        ("ÍMPAR", 47, CYAN, "accent_cold.png"), ("PAR", 51, CYAN, "accent_cold.png"),
-        ("VERMELHO", 49, RED, "accent_hot.png"), ("ZERO", 3, GREEN, "accent_green.png"),
-        ("PRETO", 48, OFF_WHITE, "accent_white.png"),
-        ("MENOR", 46, ORANGE, "accent_orange.png"), ("MAIOR", 51, ORANGE, "accent_orange.png"),
-    ]
-    cell_w = theme.width / len(cells)
-    gutter = theme.px(6)
+    cards_top = rect.top + theme.px(40)
     card_h = rect.bottom - cards_top
-    value_font = theme.font(48, True)
-    label_font = theme.font(23, True)
+    gutter = theme.px(8)
+    radius = theme.px(10)
 
-    for i, (label, pct, accent, accent_asset) in enumerate(cells):
-        outer = pygame.Rect(int(i * cell_w), cards_top, int(cell_w) + 1, card_h)
+    unit_w = theme.width / 7  # mesma largura total de antes (7 unidades), só reagrupada
+    value_font = theme.font(42, True)
+    label_font = theme.font(19, True)
+    ring_r = theme.px(14)
+
+    def half(card: pygame.Rect, side: str, label, pct, accent, accent_asset):
+        half_rect = pygame.Rect(card.left, card.top, card.width // 2, card.height) if side == "left" \
+            else pygame.Rect(card.centerx, card.top, card.width - card.width // 2, card.height)
+        blit_hbar(screen, accent_asset, pygame.Rect(half_rect.left + theme.px(4), card.top,
+                                                      half_rect.width - theme.px(8), theme.px(3)))
+        draw_text(screen, value_font, f"{pct}%", (half_rect.centerx, card.top + theme.px(16)), accent, anchor="midtop")
+        draw_percent_ring(screen, (half_rect.centerx, card.bottom - theme.px(26)), ring_r, pct, accent, (46, 50, 56))
+        draw_text(screen, label_font, label, (half_rect.centerx, card.top + theme.px(58)), TEXT_SECONDARY, anchor="midtop")
+
+    x = 0.0
+    groups = [
+        ("pair", [("ÍMPAR", 47, CYAN, "accent_cold.png"), ("PAR", 51, CYAN, "accent_cold.png")]),
+        ("pair", [("VERMELHO", 49, RED, "accent_hot.png"), ("PRETO", 48, OFF_WHITE, "accent_white.png")]),
+        ("single", [("ZERO", 3, GREEN, "accent_green.png")]),
+        ("pair", [("MENOR", 46, ORANGE, "accent_orange.png"), ("MAIOR", 51, ORANGE, "accent_orange.png")]),
+    ]
+    for kind, items in groups:
+        units = 2 if kind == "pair" else 1
+        outer = pygame.Rect(int(x), cards_top, int(units * unit_w), card_h)
         card = outer.inflate(-gutter * 2, 0)
-        radius = theme.px(8)
         blit_card_bg(screen, card, radius)
-        blit_hbar(screen, accent_asset, pygame.Rect(card.left, card.top, card.width, theme.px(3)))
         pygame.draw.rect(screen, PANEL_BORDER, card, width=1, border_radius=radius)
-        draw_text(screen, value_font, f"{pct}%", (card.centerx, card.top + theme.px(14)), accent, anchor="midtop")
-        draw_percent_ring(screen, (card.centerx, card.bottom - theme.px(28)), theme.px(15), pct, accent, (46, 50, 56))
-        draw_text(screen, label_font, label, (card.centerx, card.top + theme.px(52)), TEXT_SECONDARY, anchor="midtop")
+        if kind == "single":
+            label, pct, accent, accent_asset = items[0]
+            blit_hbar(screen, accent_asset, pygame.Rect(card.left + theme.px(4), card.top, card.width - theme.px(8), theme.px(3)))
+            draw_text(screen, value_font, f"{pct}%", (card.centerx, card.top + theme.px(16)), accent, anchor="midtop")
+            draw_percent_ring(screen, (card.centerx, card.bottom - theme.px(26)), ring_r, pct, accent, (46, 50, 56))
+            draw_text(screen, label_font, label, (card.centerx, card.top + theme.px(58)), TEXT_SECONDARY, anchor="midtop")
+        else:
+            half(card, "left", *items[0])
+            half(card, "right", *items[1])
+            pygame.draw.line(screen, PANEL_BORDER, (card.centerx, card.top + theme.px(10)),
+                              (card.centerx, card.bottom - theme.px(10)), 1)
+        x += units * unit_w
 
 
 def build_mockup(logo_path: str | None = None) -> pygame.Surface:
@@ -435,7 +466,7 @@ def build_mockup(logo_path: str | None = None) -> pygame.Surface:
     bg = asset_scaled("background.png", (theme.width, theme.height))
     screen.blit(bg, (0, 0))
 
-    header_h = theme.px(round(H * 0.085))
+    header_h = theme.px(round(H * 0.105))
     stats_h = theme.px(round(H * 0.155))
     gap = theme.px(12)
 
