@@ -11,10 +11,11 @@ queda de energia ou travamento.
 Este README é a referência técnica/arquitetural do projeto. Para uso do dia a dia e instalação,
 veja os guias dedicados em [`docs/`](docs/):
 
-- [`docs/FUNCIONALIDADES.md`](docs/FUNCIONALIDADES.md) — manual de uso: tela principal, atalhos de
-  teclado, menu administrativo, licenciamento.
-- [`docs/INSTALACAO_RASPBERRY_PI3.md`](docs/INSTALACAO_RASPBERRY_PI3.md) — passo a passo de
-  instalação num Raspberry Pi 3 físico, do cartão SD em branco ao equipamento em produção.
+- [`docs/FUNCIONALIDADES.md`](docs/FUNCIONALIDADES.md) ([PDF](docs/FUNCIONALIDADES.pdf)) — manual
+  de uso: tela principal, atalhos de teclado, menu administrativo, licenciamento.
+- [`docs/INSTALACAO_RASPBERRY_PI3.md`](docs/INSTALACAO_RASPBERRY_PI3.md)
+  ([PDF](docs/INSTALACAO_RASPBERRY_PI3.pdf)) — passo a passo de instalação num Raspberry Pi 3
+  físico, do cartão SD em branco ao equipamento em produção.
 
 ## 1. Arquitetura escolhida
 
