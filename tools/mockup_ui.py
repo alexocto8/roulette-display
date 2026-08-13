@@ -273,7 +273,7 @@ def draw_center(screen, theme: Theme, content_rect: pygame.Rect,
     cx, cy = content_rect.centerx, y + diameter // 2
     screen.blit(badge, (cx - badge_size // 2, cy - badge_size // 2))
 
-    num_font = theme.font(int(diameter * 0.58), True)
+    num_font = theme.font(int(diameter * 0.76), True)
     blit_outlined(screen, num_font, str(last_number), (cx, cy), fill=OFF_WHITE, outline=(0, 0, 0), outline_px=0)
 
     tag_y = cy + diameter // 2 + theme.px(26)

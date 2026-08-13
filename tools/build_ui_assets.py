@@ -111,12 +111,14 @@ def make_flame_icon(dark, bright, core, size=64) -> Image.Image:
 
 # -- círculo do último resultado / chips do histórico ----------------------------------------
 
-def make_result_badge(diameter, fill, ring_tone, accent, shadow_alpha=110, gold_halo=False) -> Image.Image:
-    """Composição completa: sombra suave -> halo dourado (opcional, só no círculo grande) -> anel
-    de accent -> anel escuro -> preenchimento com leve gradiente radial -> highlight superior
-    discreto. Usada tanto pro círculo grande do último resultado quanto (num diâmetro menor) pros
-    chips do histórico -- mesma função, só o tamanho/`gold_halo` muda."""
-    pad = int(diameter * (0.30 if gold_halo else 0.16))
+def make_result_badge(diameter, fill, ring_tone, accent, shadow_alpha=110, gold_halo=False,
+                       double_ring=False) -> Image.Image:
+    """Composição completa: sombra suave -> halo dourado (opcional) -> bisel dourado grosso ->
+    preenchimento com leve gradiente radial (cor CHEIA/saturada, sem diluir em cinza) -> highlight
+    superior discreto. Usada tanto pro círculo grande do último resultado (`gold_halo=True,
+    double_ring=True`) quanto pros chips do histórico (`gold_halo=True`, sem o segundo anel/brilho,
+    que é sutil demais pra fazer sentido num círculo pequeno)."""
+    pad = int(diameter * (0.34 if double_ring else 0.30 if gold_halo else 0.16))
     canvas = diameter + pad * 2
     img = Image.new("RGBA", (canvas * SS, canvas * SS), (0, 0, 0, 0))
     cx = cy = canvas * SS / 2
@@ -133,19 +135,32 @@ def make_result_badge(diameter, fill, ring_tone, accent, shadow_alpha=110, gold_
     # borrado bastante, pra criar o "glow" quente ao redor do círculo que a referência usa. Ainda
     # é só um blur no BUILD, nunca em runtime.
     if gold_halo:
+        # Posicionado JUNTO DA BORDA EXTERNA do bisel (não mais perto do preenchimento) e com
+        # blur bem menor -- um halo desfocado demais "engolia" o vão entre o preenchimento e o
+        # bisel e escondia o anel fino duplo (bug encontrado nesta rodada: o glow tinha blur
+        # ~23px finais, maior que o próprio vão de ~9px, vazando pra dentro dele).
         halo = Image.new("RGBA", img.size, (0, 0, 0, 0))
-        halo_r = r + SS * 18
+        halo_r = r + SS * 38
         ImageDraw.Draw(halo).ellipse([cx - halo_r, cy - halo_r, cx + halo_r, cy + halo_r],
-                                      outline=(*accent, 210), width=int(SS * 10))
-        halo = halo.filter(ImageFilter.GaussianBlur(radius=diameter * 0.06 * SS))
+                                      outline=(*accent, 190), width=int(SS * 14))
+        halo = halo.filter(ImageFilter.GaussianBlur(radius=diameter * 0.035 * SS))
         img.alpha_composite(halo)
 
     # 2. bezel dourado GROSSO (não uma linha fina) -- anel metálico com gradiente radial (mais
     # escuro na borda externa, mais claro perto do círculo) + um arco de brilho na metade
-    # superior simulando luz vinda de cima, igual a um bisel de moeda/medalha física.
+    # superior simulando luz vinda de cima, igual a um bisel de moeda/medalha física. Deixa um
+    # vão (sem pintar nada) entre o preenchimento (raio `r`) e o bisel -- é esse vão escuro que
+    # cria a separação visual "círculo preto real" -> "anel dourado", em vez de um anel colado.
+    # Vão 1: espaço em branco (transparente) logo depois do preenchimento -- é o que separa
+    # visualmente "círculo preto real" do anel dourado, em vez dos dois ficarem colados.
+    ring1_r = r + SS * 9
+    ring1_w = SS * 2
+    # Vão 2: outro espaço em branco antes do bisel grosso começar -- sem isso, a borda mais clara
+    # do próprio gradiente do bisel (que já começa dourado bem claro) fica colada no anel fino e
+    # os dois se misturam visualmente num anel só.
+    bezel_inner = ring1_r + ring1_w + SS * 10
     if gold_halo:
-        bezel_outer = r + SS * 15
-        bezel_inner = r + SS * 4
+        bezel_outer = bezel_inner + SS * 15
         band = Image.new("RGBA", img.size, (0, 0, 0, 0))
         bd = ImageDraw.Draw(band)
         gold_dark = _lerp(accent, (40, 30, 10), 0.45)
@@ -156,6 +171,12 @@ def make_result_badge(diameter, fill, ring_tone, accent, shadow_alpha=110, gold_
             rr = bezel_inner + (bezel_outer - bezel_inner) * t
             color = _lerp(gold_light, gold_dark, t)
             bd.ellipse([cx - rr, cy - rr, cx + rr, cy + rr], fill=(*color, 255))
+        # `ellipse(fill=...)` sempre preenche o disco INTEIRO até aquele raio -- sem isso, o menor
+        # círculo do loop (raio `bezel_inner`) deixava um disco dourado sólido colado no
+        # preenchimento em vez de um anel oco, escondendo o vão/anel duplo (bug real encontrado
+        # nesta rodada). `fill=(0,0,0,0)` sobrescreve os pixels direto (sem blending), então isso
+        # apaga de verdade o miolo em vez de só desenhar transparência por cima.
+        bd.ellipse([cx - bezel_inner, cy - bezel_inner, cx + bezel_inner, cy + bezel_inner], fill=(0, 0, 0, 0))
         # brilho superior (luz vinda de cima) -- arco largo e claro, só no terço de cima do bisel
         bezel_mid = (bezel_outer + bezel_inner) / 2
         bw = bezel_outer - bezel_inner
@@ -168,23 +189,44 @@ def make_result_badge(diameter, fill, ring_tone, accent, shadow_alpha=110, gold_
         # disco "cortado a laser" -- blur bem pequeno, é só antialiasing extra.
         band = band.filter(ImageFilter.GaussianBlur(radius=SS * 0.6))
         img.alpha_composite(band)
+
+        # 2.5 segundo anel, fino e brilhante, concêntrico, DENTRO do vão -- só no círculo
+        # principal (chips pequenos não têm espaço/necessidade pra um anel duplo). Um pequeno
+        # brilho pontual ("glint") simula reflexo de luz numa superfície polida.
+        if double_ring:
+            ImageDraw.Draw(img).ellipse(
+                [cx - ring1_r, cy - ring1_r, cx + ring1_r, cy + ring1_r],
+                outline=(255, 235, 190, 235), width=ring1_w)
+
+            glint = Image.new("RGBA", img.size, (0, 0, 0, 0))
+            glint_r = bezel_mid
+            glint_angle = math.radians(215)
+            gx = cx + math.cos(glint_angle) * glint_r
+            gy = cy + math.sin(glint_angle) * glint_r
+            gs = bw * 0.9
+            ImageDraw.Draw(glint).ellipse([gx - gs, gy - gs, gx + gs, gy + gs], fill=(255, 255, 255, 235))
+            glint = glint.filter(ImageFilter.GaussianBlur(radius=gs * 0.35))
+            img.alpha_composite(glint)
     else:
         ring_r = r + SS * 5
         ImageDraw.Draw(img).ellipse([cx - ring_r, cy - ring_r, cx + ring_r, cy + ring_r],
                                      outline=(*accent, 130), width=max(1, SS))
+        # anel escuro fino -- só usado nessa variante simples (sem bisel dourado)
+        ImageDraw.Draw(img).ellipse([cx - r, cy - r, cx + r, cy + r], outline=(*ring_tone, 255), width=SS * 2)
 
-    # 3. anel escuro fino
-    ImageDraw.Draw(img).ellipse([cx - r, cy - r, cx + r, cy + r], outline=(*ring_tone, 255), width=SS * 2)
-
-    # 4. preenchimento com gradiente radial sutil (centro pouco mais claro que a borda)
-    center_tone = _lerp(fill, (255, 255, 255), 0.10)
+    # 4. preenchimento com gradiente radial (centro mais claro, borda mais escura) -- cor CHEIA,
+    # saturada (a referência usa preto/vermelho/verde de verdade, não uma versão diluída/cinza);
+    # o contraste contra o fundo escuro do app vem do bisel dourado, não mais de clarear o
+    # preenchimento como a v1-v7 faziam pro "preto".
+    center_tone = _lerp(fill, (255, 255, 255), 0.22)
+    edge_tone = _lerp(fill, (0, 0, 0), 0.30)
     fill_img = Image.new("RGBA", img.size, (0, 0, 0, 0))
     fd = ImageDraw.Draw(fill_img)
-    steps = 24
+    steps = 28
     for i in range(steps, 0, -1):
         t = i / steps
         rr = r * t
-        color = _lerp(fill, center_tone, 1 - t)
+        color = _lerp(edge_tone, center_tone, 1 - t)
         fd.ellipse([cx - rr, cy - rr, cx + rr, cy + rr], fill=(*color, 255))
     img.alpha_composite(fill_img)
 
@@ -291,9 +333,10 @@ def main() -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
     BLUE = (0x00, 0xA8, 0xFF)
-    RED = (0xFF, 0x39, 0x39)
-    GREEN = (0x00, 0xD8, 0x75)
-    GRAY_85 = (38, 38, 38)
+    RED = (0xE8, 0x1B, 0x1B)
+    GREEN = (0x0C, 0x8A, 0x40)
+    TRUE_BLACK = (14, 14, 16)  # preto de verdade -- o bisel dourado (não mais o tom do
+    # preenchimento) é quem garante contraste contra o fundo escuro do app agora.
     GOLD = (196, 160, 92)
     GOLD_DARK = (90, 74, 44)
     RED_DARK = (90, 20, 18)
@@ -306,13 +349,13 @@ def main() -> None:
     make_snowflake_icon(BLUE, size=64).save(OUT_DIR / "cold_icon.png")
     make_flame_icon((160, 25, 10), (255, 140, 30), core=(255, 110, 20), size=64).save(OUT_DIR / "hot_icon.png")
 
-    make_result_badge(380, fill=RED, ring_tone=(255, 130, 122), accent=GOLD, gold_halo=True).save(OUT_DIR / "result_badge_red.png")
-    make_result_badge(380, fill=GRAY_85, ring_tone=(120, 122, 128), accent=GOLD, gold_halo=True).save(OUT_DIR / "result_badge_black.png")
-    make_result_badge(380, fill=GREEN, ring_tone=(90, 235, 160), accent=GOLD, gold_halo=True).save(OUT_DIR / "result_badge_green.png")
+    make_result_badge(380, fill=RED, ring_tone=RED, accent=GOLD, gold_halo=True, double_ring=True).save(OUT_DIR / "result_badge_red.png")
+    make_result_badge(380, fill=TRUE_BLACK, ring_tone=TRUE_BLACK, accent=GOLD, gold_halo=True, double_ring=True).save(OUT_DIR / "result_badge_black.png")
+    make_result_badge(380, fill=GREEN, ring_tone=GREEN, accent=GOLD, gold_halo=True, double_ring=True).save(OUT_DIR / "result_badge_green.png")
 
-    make_result_badge(72, fill=RED, ring_tone=(170, 50, 46), accent=(170, 50, 46), shadow_alpha=70).save(OUT_DIR / "history_chip_red.png")
-    make_result_badge(72, fill=GRAY_85, ring_tone=(110, 112, 116), accent=(110, 112, 116), shadow_alpha=70).save(OUT_DIR / "history_chip_black.png")
-    make_result_badge(72, fill=GREEN, ring_tone=(20, 130, 80), accent=(20, 130, 80), shadow_alpha=70).save(OUT_DIR / "history_chip_green.png")
+    make_result_badge(96, fill=RED, ring_tone=RED, accent=GOLD, gold_halo=True, shadow_alpha=90).save(OUT_DIR / "history_chip_red.png")
+    make_result_badge(96, fill=TRUE_BLACK, ring_tone=TRUE_BLACK, accent=GOLD, gold_halo=True, shadow_alpha=90).save(OUT_DIR / "history_chip_black.png")
+    make_result_badge(96, fill=GREEN, ring_tone=GREEN, accent=GOLD, gold_halo=True, shadow_alpha=90).save(OUT_DIR / "history_chip_green.png")
 
     make_accent_bar(420, 6, BLUE_DARK, BLUE_BRIGHT).save(OUT_DIR / "accent_cold.png")
     make_accent_bar(420, 6, RED_DARK, RED_BRIGHT).save(OUT_DIR / "accent_hot.png")
