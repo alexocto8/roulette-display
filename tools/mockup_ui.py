@@ -24,7 +24,6 @@ real."""
 from __future__ import annotations
 
 import argparse
-import math
 import os
 import sys
 from pathlib import Path
@@ -37,7 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import pygame
 
 from app.ui.theme import (
-    CYAN, RED, GREEN, ORANGE, TEXT_SECONDARY, TEXT_MUTED, PANEL_BORDER, Theme,
+    CYAN, RED, GREEN, ORANGE, GOLD, TEXT_PRIMARY, TEXT_SECONDARY, TEXT_MUTED, PANEL_BORDER, Theme,
 )
 
 W, H = 1080, 1920
@@ -379,83 +378,93 @@ def draw_center_history(screen, theme: Theme, rect: pygame.Rect, history: list[i
                                               (tx + tri / 2, pill.centery - tri // 2)])
 
 
-def draw_percent_ring(screen, center, radius, pct: float, color, bg) -> None:
-    """Mini anel percentual (eco visual do MESMO percentual já mostrado como texto -- nenhum dado
-    novo). Desenhado como uma polilinha grossa em vez de `pygame.draw.arc` -- essa primitiva do
-    SDL fica visivelmente serrilhada/retangular em raios pequenos; uma polilinha com segmentos
-    curtos e `pygame.draw.circle` nas juntas fica muito mais suave, ainda barata o bastante pra
-    não precisar de pré-render (poucas dezenas de pontos, calculados uma vez por card)."""
-    width = max(2, int(radius * 0.34))
-    pygame.draw.circle(screen, bg, center, radius, width=width)
-    if pct <= 0:
-        return
-    start = -math.pi / 2
-    frac = min(1.0, pct / 100.0)
-    steps = max(2, int(40 * frac))
-    pts = []
-    for i in range(steps + 1):
-        a = start + 2 * math.pi * frac * (i / steps)
-        pts.append((center[0] + math.cos(a) * radius, center[1] + math.sin(a) * radius))
-    if len(pts) >= 2:
-        pygame.draw.lines(screen, color, False, pts, width)
-        r = width // 2
-        for p in (pts[0], pts[-1]):
-            pygame.draw.circle(screen, color, (int(p[0]), int(p[1])), r)
-
-
 def draw_stats(screen, theme: Theme, rect: pygame.Rect) -> None:
-    """Reorganizado em GRUPOS (não mais 7 caixas soltas e idênticas) -- as três apostas de
-    "chance simples" da roleta são pares naturais que somam ~100% (ímpar/par, vermelho/preto,
-    menor/maior); mostrar cada par dentro de um único card, lado a lado com um divisor fino,
-    deixa esse contraste óbvio de bater o olho em vez de obrigar a comparar duas caixas
-    distantes. Zero fica sozinho no meio (mesma posição que ocupa numa mesa de roleta de
-    verdade), flanqueado pelos pares -- nenhuma categoria nova, só reagrupamento visual das
-    mesmas 7 categorias/percentuais de sempre."""
-    draw_fading_title(screen, theme, "ESTATÍSTICAS", rect.top, rect)
-    cards_top = rect.top + theme.px(40)
-    card_h = rect.bottom - cards_top
-    gutter = theme.px(8)
-    radius = theme.px(10)
+    """Pedido explícito do cliente, com print de referência anexado: volta a 7 cards INDIVIDUAIS
+    (substitui o reagrupamento em pares da rodada anterior) -- cada card com borda na cor da
+    própria categoria, a contagem bruta "141 / 300" abaixo do rótulo, e uma barra de progresso
+    preenchida na mesma cor. Título ganha o sufixo "ÚLTIMOS 300 GIROS" ladeado por linhas
+    douradas com um ponto em cada ponta, e uma legenda de rodapé fecha a seção. Mesmas 7
+    categorias/percentuais de sempre -- a contagem "X / 300" é só pct% de uma amostra fixa de 300
+    giros (consistente com o percentual já mostrado), nenhum dado novo. Os separadores "·" são
+    desenhados como círculos, não o glifo Unicode -- mesmo motivo do triângulo do "MAIS RECENTE":
+    a fonte padrão embutida do pygame não garante esse glifo."""
+    title_font = theme.font(30, True)
+    subtitle_font = theme.font(24, True)
+    title_s = title_font.render("ESTATÍSTICAS", True, TEXT_PRIMARY)
+    subtitle_s = subtitle_font.render("ÚLTIMOS 300 GIROS", True, TEXT_SECONDARY)
+    mid_gap = theme.px(16)
+    dot_r = theme.px(3)
+    total_w = title_s.get_width() + mid_gap * 2 + dot_r * 2 + subtitle_s.get_width()
+    max_h = max(title_s.get_height(), subtitle_s.get_height())
+    y = rect.top
+    x = rect.centerx - total_w // 2
+    screen.blit(title_s, (x, y + (max_h - title_s.get_height()) // 2))
+    x += title_s.get_width() + mid_gap
+    pygame.draw.circle(screen, GOLD, (x + dot_r, y + max_h // 2), dot_r)
+    x += dot_r * 2 + mid_gap
+    screen.blit(subtitle_s, (x, y + (max_h - subtitle_s.get_height()) // 2))
 
-    unit_w = theme.width / 7  # mesma largura total de antes (7 unidades), só reagrupada
-    value_font = theme.font(42, True)
-    label_font = theme.font(19, True)
-    ring_r = theme.px(14)
+    line_y = y + max_h // 2
+    edge_gap = theme.px(22)
+    line_w = (rect.width - total_w) // 2 - edge_gap - theme.px(24)
+    if line_w > theme.px(20):
+        gold_line = asset_scaled("accent_gold.png", (line_w, 3))
+        left_x = rect.centerx - total_w // 2 - edge_gap
+        right_x = rect.centerx + total_w // 2 + edge_gap
+        screen.blit(gold_line, (left_x - line_w, line_y - 1))
+        screen.blit(pygame.transform.flip(gold_line, True, False), (right_x, line_y - 1))
+        pygame.draw.circle(screen, GOLD, (left_x - theme.px(8), line_y), dot_r)
+        pygame.draw.circle(screen, GOLD, (right_x + theme.px(8), line_y), dot_r)
 
-    def half(card: pygame.Rect, side: str, label, pct, accent, accent_asset):
-        half_rect = pygame.Rect(card.left, card.top, card.width // 2, card.height) if side == "left" \
-            else pygame.Rect(card.centerx, card.top, card.width - card.width // 2, card.height)
-        blit_hbar(screen, accent_asset, pygame.Rect(half_rect.left + theme.px(4), card.top,
-                                                      half_rect.width - theme.px(8), theme.px(3)))
-        draw_text(screen, value_font, f"{pct}%", (half_rect.centerx, card.top + theme.px(16)), accent, anchor="midtop")
-        draw_percent_ring(screen, (half_rect.centerx, card.bottom - theme.px(26)), ring_r, pct, accent, (46, 50, 56))
-        draw_text(screen, label_font, label, (half_rect.centerx, card.top + theme.px(58)), TEXT_SECONDARY, anchor="midtop")
+    cards_top = y + max_h + theme.px(22)
+    gutter = theme.px(7)
+    radius = theme.px(12)
+    unit_w = theme.width / 7
+    card_h = theme.px(150)
 
-    x = 0.0
-    groups = [
-        ("pair", [("ÍMPAR", 47, CYAN, "accent_cold.png"), ("PAR", 51, CYAN, "accent_cold.png")]),
-        ("pair", [("VERMELHO", 49, RED, "accent_hot.png"), ("PRETO", 48, OFF_WHITE, "accent_white.png")]),
-        ("single", [("ZERO", 3, GREEN, "accent_green.png")]),
-        ("pair", [("MENOR", 46, ORANGE, "accent_orange.png"), ("MAIOR", 51, ORANGE, "accent_orange.png")]),
+    SAMPLE_N = 300
+    cells = [
+        ("ÍMPAR", 47, CYAN, "accent_cold.png"), ("PAR", 51, CYAN, "accent_cold.png"),
+        ("VERMELHO", 49, RED, "accent_hot.png"), ("ZERO", 3, GREEN, "accent_green.png"),
+        ("PRETO", 48, OFF_WHITE, "accent_white.png"),
+        ("MENOR", 46, ORANGE, "accent_orange.png"), ("MAIOR", 51, ORANGE, "accent_orange.png"),
     ]
-    for kind, items in groups:
-        units = 2 if kind == "pair" else 1
-        outer = pygame.Rect(int(x), cards_top, int(units * unit_w), card_h)
+    value_font = theme.font(38, True)
+    label_font = theme.font(17, True)
+    frac_font = theme.font(19, True)
+
+    for i, (label, pct, accent, accent_asset) in enumerate(cells):
+        outer = pygame.Rect(round(i * unit_w), cards_top, round(unit_w) + 1, card_h)
         card = outer.inflate(-gutter * 2, 0)
         blit_card_bg(screen, card, radius)
-        pygame.draw.rect(screen, PANEL_BORDER, card, width=1, border_radius=radius)
-        if kind == "single":
-            label, pct, accent, accent_asset = items[0]
-            blit_hbar(screen, accent_asset, pygame.Rect(card.left + theme.px(4), card.top, card.width - theme.px(8), theme.px(3)))
-            draw_text(screen, value_font, f"{pct}%", (card.centerx, card.top + theme.px(16)), accent, anchor="midtop")
-            draw_percent_ring(screen, (card.centerx, card.bottom - theme.px(26)), ring_r, pct, accent, (46, 50, 56))
-            draw_text(screen, label_font, label, (card.centerx, card.top + theme.px(58)), TEXT_SECONDARY, anchor="midtop")
-        else:
-            half(card, "left", *items[0])
-            half(card, "right", *items[1])
-            pygame.draw.line(screen, PANEL_BORDER, (card.centerx, card.top + theme.px(10)),
-                              (card.centerx, card.bottom - theme.px(10)), 1)
-        x += units * unit_w
+        pygame.draw.rect(screen, accent, card, width=2, border_radius=radius)
+
+        draw_text(screen, value_font, f"{pct}%", (card.centerx, card.top + theme.px(14)), accent, anchor="midtop")
+        draw_text(screen, label_font, label, (card.centerx, card.top + theme.px(58)), TEXT_SECONDARY, anchor="midtop")
+        count = round(pct / 100 * SAMPLE_N)
+        draw_text(screen, frac_font, f"{count} / {SAMPLE_N}", (card.centerx, card.top + theme.px(82)),
+                  TEXT_PRIMARY, anchor="midtop")
+
+        bar_h = theme.px(6)
+        bar_rect = pygame.Rect(card.left + theme.px(14), card.top + theme.px(118), card.width - theme.px(28), bar_h)
+        pygame.draw.rect(screen, (46, 50, 56), bar_rect, border_radius=bar_h // 2)
+        fill_w = max(bar_h, int(bar_rect.width * min(1.0, pct / 100)))
+        pygame.draw.rect(screen, accent, pygame.Rect(bar_rect.left, bar_rect.top, fill_w, bar_h),
+                          border_radius=bar_h // 2)
+
+    cap_font = theme.font(15, True)
+    cap_left = cap_font.render("DADOS REFERENTES AOS ÚLTIMOS 300 GIROS", True, TEXT_MUTED)
+    cap_right = cap_font.render("SUJEITO À ALEATORIEDADE", True, TEXT_MUTED)
+    cap_gap = theme.px(10)
+    cap_dot_r = theme.px(2)
+    cap_w = cap_left.get_width() + cap_gap * 2 + cap_dot_r * 2 + cap_right.get_width()
+    cap_cy = rect.bottom - theme.px(8) - cap_left.get_height() // 2
+    cx = rect.centerx - cap_w // 2
+    screen.blit(cap_left, (cx, cap_cy - cap_left.get_height() // 2))
+    cx += cap_left.get_width() + cap_gap
+    pygame.draw.circle(screen, TEXT_MUTED, (cx + cap_dot_r, cap_cy), cap_dot_r)
+    cx += cap_dot_r * 2 + cap_gap
+    screen.blit(cap_right, (cx, cap_cy - cap_right.get_height() // 2))
 
 
 def build_mockup(logo_path: str | None = None) -> pygame.Surface:
