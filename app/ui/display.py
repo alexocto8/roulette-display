@@ -796,13 +796,15 @@ class RouletteDisplay:
 
     def _draw_header(self, surface: pygame.Surface, rect: pygame.Rect) -> None:
         """APOSTA MÍN. no canto esquerdo, APOSTA MÁX. no canto direito, cada uma em um cartão sem
-        borda; "SISTEMA OK" discreto no canto inferior direito, colado na linha dourada que
-        fecha o cabeçalho -- layout aprovado em `tools/mockup_ui.py`."""
+        borda; "SISTEMA OK" discreto no topo, entre os dois cartões -- layout aprovado em
+        `tools/mockup_ui.py`. Cartões 10% menores que o desenho original e deslocados pra cima
+        pra abrir folga da linha dourada que fecha o cabeçalho (pedido explícito do usuário após
+        ver a sobreposição na tela real)."""
         theme = self.theme
         header_h = rect.height
-        card_top = theme.px(8)
-        card_w, card_h = theme.px(268), theme.px(158)
-        label_font, value_font = theme.font(34, bold=True), theme.font(66, bold=True)
+        card_top = theme.px(4)
+        card_w, card_h = theme.px(241), theme.px(142)
+        label_font, value_font = theme.font(31, bold=True), theme.font(59, bold=True)
 
         left_rect = pygame.Rect(theme.px(20), card_top, card_w, card_h)
         right_rect = pygame.Rect(theme.width - theme.px(20) - card_w, card_top, card_w, card_h)
@@ -810,20 +812,22 @@ class RouletteDisplay:
             (left_rect, ("APOSTA MÍN.", f"{self.config.currency} {self.config.min_bet}")),
             (right_rect, ("APOSTA MÁX.", f"{self.config.currency} {self.config.max_bet}")),
         ):
-            self._blit_card_bg(surface, r, theme.px(10))
-            _draw_text(surface, label_font, label, (r.centerx, r.top + theme.px(18)), TEXT_SECONDARY, anchor="midtop")
-            _draw_text(surface, value_font, value, (r.centerx, r.top + theme.px(58)), ORANGE, anchor="midtop")
+            self._blit_card_bg(surface, r, theme.px(9))
+            _draw_text(surface, label_font, label, (r.centerx, r.top + theme.px(16)), TEXT_SECONDARY, anchor="midtop")
+            _draw_text(surface, value_font, value, (r.centerx, r.top + theme.px(52)), ORANGE, anchor="midtop")
 
         # "● SISTEMA OK": verde só quando as duas coisas forem verdade -- a última escrita no
         # banco teve sucesso E a checagem periódica de saúde do SQLite (`self.system_ok`)
         # também passou. Não é telemetria, só um sinal local rápido de "o painel está realmente
-        # gravando" sem precisar abrir o admin ou ler log.
-        dot_c = (theme.width - theme.px(22), header_h - theme.px(16))
+        # gravando" sem precisar abrir o admin ou ler log. Reposicionado pro topo central (vão
+        # vazio entre os dois cartões) -- a posição antiga, colada na linha dourada do rodapé do
+        # cabeçalho, ficava sobreposta a ela.
+        dot_c = (theme.width // 2, theme.px(10))
         dot_color = GREEN if self.system_ok else RED
         pygame.draw.circle(surface, dot_color, dot_c, theme.px(6))
         label_text = "SISTEMA OK" if self.system_ok else "SISTEMA COM FALHA"
         _draw_text(surface, theme.font(17, bold=True), label_text,
-                   (dot_c[0] - theme.px(12), dot_c[1]), TEXT_MUTED, anchor="midright")
+                   (dot_c[0] + theme.px(12), dot_c[1]), TEXT_MUTED, anchor="midleft")
 
         self._blit_hbar(surface, "accent_gold_glow.png", pygame.Rect(0, header_h - theme.px(10), theme.width, theme.px(20)))
         self._blit_hbar(surface, "accent_gold.png", pygame.Rect(0, header_h - 2, theme.width, 3))
@@ -1070,8 +1074,8 @@ class RouletteDisplay:
             for x in lane_x.values():
                 surface.blit(fade_img, (x - fade_img.get_width() // 2, lanes_top))
 
-        hist_font = theme.font(int(d * 0.54), bold=True)
-        chip_size = int(d * 1.30)
+        hist_font = theme.font(40, bold=True)  # igual ao num_font de _draw_side_panel
+        chip_size = theme.px(78)  # igual ao badge_d de _draw_side_panel
         node_r = theme.px(4)
         connector_w = theme.px(2)
         for i in range(n_rows):

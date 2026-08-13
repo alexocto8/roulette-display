@@ -25,8 +25,8 @@ class Config:
 
     history_size: int = 15
     statistics_window: int = 300  # console de referência do cliente guarda os últimos 300 números
-    hot_numbers_count: int = 3
-    cold_numbers_count: int = 3
+    hot_numbers_count: int = 5
+    cold_numbers_count: int = 5
 
     # Exibidos como informação da mesa (não afetam registro/estatística de números). Texto livre
     # (não numérico) de propósito: formatação de moeda/limite varia por cassino e não vale a pena
