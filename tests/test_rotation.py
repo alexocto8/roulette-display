@@ -96,12 +96,13 @@ def test_screen_rotation_config_field_defaults_to_zero_for_existing_installs():
     assert Config().screen_rotation == 0
 
 
-def test_hot_cold_trapezoid_badges_survive_rotation(tmp_path):
-    """Regressão: `_draw_trapezoid` desenhava em `pygame.display.get_surface()` em vez de
-    `self.screen` -- sem rotação os dois eram a mesma superfície (nunca pegou o bug), mas com
-    `screen_rotation` configurado `self.screen` vira uma superfície lógica separada, e os badges
-    de FRIO/QUENTE sumiriam do quadro final (desenhados na física, sobrescritos pelo flip
-    rotacionado da lógica) se o bug voltasse."""
+def test_hot_cold_panels_survive_rotation(tmp_path):
+    """Regressão: se algum método de desenho voltasse a usar `pygame.display.get_surface()` em
+    vez do `surface`/`self.screen` recebido -- sem rotação os dois são a mesma superfície (nunca
+    pegaria o bug), mas com `screen_rotation` configurado `self.screen` vira uma superfície
+    lógica separada, e o conteúdo desenhado na física seria sobrescrito pelo flip rotacionado da
+    lógica, sumindo do quadro final. O título "QUENTE" (vermelho) é usado como sonda porque é
+    garantidamente desenhado sempre que há pelo menos uma entrada quente."""
     from app.database.db import Database
     from app.services.spin_service import SpinService
     from app.ui.display import RouletteDisplay
@@ -124,8 +125,9 @@ def test_hot_cold_trapezoid_badges_survive_rotation(tmp_path):
     physical = pygame.display.get_surface()
     from app.ui.theme import RED
 
-    # varre a superfície física inteira -- algum pixel precisa ser exatamente RED (cor do trapézio
-    # QUENTE), senão o badge não sobreviveu ao pipeline de rotação.
+    # varre a superfície física inteira -- algum pixel precisa ser exatamente RED (título QUENTE
+    # ou um chip vermelho no painel/histórico), senão o conteúdo não sobreviveu ao pipeline de
+    # rotação.
     found_red = False
     w, h = physical.get_size()
     for x in range(0, w, 4):
@@ -135,7 +137,7 @@ def test_hot_cold_trapezoid_badges_survive_rotation(tmp_path):
                 break
         if found_red:
             break
-    assert found_red, "badge QUENTE (trapézio vermelho) não apareceu na superfície física rotacionada"
+    assert found_red, "conteúdo vermelho (painel QUENTE) não apareceu na superfície física rotacionada"
 
     db.close()
     pygame.quit()

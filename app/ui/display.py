@@ -1,20 +1,27 @@
 """Main fullscreen display: the electronic roulette scoreboard itself.
 
-Layout follows the client's exact visual-contract reference (a precise annotated mockup, not
-just a photo): a full-height three-column structure — FRIO (cold numbers, blue trapezoid badges)
-on the left, the current result centered, QUENTE (hot numbers, orange trapezoid badges) with the
-casino logo underneath on the right — with bet limits across the very top and a seven-cell
-percentage bar (ÍMPAR/PAR/VERMELHO/ZERO/PRETO/MENOR/MAIOR, with hand-drawn card-suit icons — the
-bundled font has no suit glyphs) across the very bottom. Colors are the exact hex values the
-client specified. Flat colors, no gradients — this is meant to read as a piece of casino signage
-hardware, not a web dashboard. Cards/badges do get a subtle drop shadow and result changes get a
-brief soft glow (explicit client request for more depth/sophistication) — kept restrained: no
-periodic idle animation, nothing that would pull attention away from the number that matters.
+Layout follows the client's approved visual design (mockup rounds v1-v17 of
+`tools/mockup_ui.py`, iterated to final approval before any of this file was touched — see that
+module's docstring history for the full design rationale): a full-height three-column structure —
+FRIO (cold numbers) on the left, the current result centered, QUENTE (hot numbers, with the
+casino logo underneath) on the right — with bet limits across the very top and seven individual
+statistic cards (ÍMPAR/PAR/VERMELHO/ZERO/PRETO/MENOR/MAIOR) across the bottom. Colors are the
+exact hex values the client specified. Cards/badges/the center circle use the pre-rendered PNGs in
+`assets/ui/` (gold bezels, glows, chip badges — see `tools/build_ui_assets.py`), composited once
+per distinct size and cached (`UiAssets`, `app/ui/assets.py`) rather than recomputed per frame.
 
-Rendering stays simple (flat rects/polygons, text, a couple of short eased tweens — no shaders, no
-video) and the frame rate drops to `config.idle_fps` whenever nothing is actively transitioning or
-being typed, which is what keeps CPU usage low on a Raspberry Pi 3 across the long idle stretches
-between spins. See app/ui/animation.py for the tween/easing helpers used below.
+A spin registration triggers a full-screen reveal animation (`_draw_reveal` and friends,
+approved via `tools/mockup_reveal_animation.py`): a casino-logo splash, then the roulette wheel
+(cropped from the client's reference art) spinning behind a partial dark gradient with the result
+badge fading in, then the result held (pulsing, gold glow) before crossfading back to this normal
+screen. See `_RevealPhase`/`_reveal_phase_at` below for the exact timeline.
+
+Rendering stays cheap per frame (blits of pre-scaled/cached surfaces, text, a couple of short eased
+tweens — no shaders, no video, no per-frame image rotation at full resolution — see
+`_wheel_rotation_cache` for how the one genuinely expensive visual, the spinning wheel, is kept of
+bounded cost) and the frame rate drops to `config.idle_fps` whenever nothing is actively
+transitioning or being typed, which is what keeps CPU usage low on a Raspberry Pi 3 across the long
+idle stretches between spins. See app/ui/animation.py for the tween/easing helpers used below.
 """
 from __future__ import annotations
 
@@ -34,26 +41,24 @@ from app.services.spin_service import DisplayState, SpinService
 from app.ui import sound
 from app.ui.admin import AdminPanel
 from app.ui.animation import Tween, ease_out_back, ease_out_cubic
-from app.ui.assets import load_image
+from app.ui.assets import UiAssets, load_image
 from app.ui.rotation import create_screen
 from app.ui.splash import show_splash
 from app.ui.theme import (
     BG,
     BLACK,
-    COLOR_MAP,
     CYAN,
     GOLD,
     GREEN,
     NUMBER_COLOR_MAP,
+    OFF_WHITE,
     ORANGE,
     PANEL_BG,
     PANEL_BORDER,
     RED,
-    SILVER,
     TEXT_MUTED,
     TEXT_PRIMARY,
     TEXT_SECONDARY,
-    Theme,
 )
 from app.services import power_service, watchdog_service
 
@@ -84,42 +89,64 @@ _CLEAR_ALL_CODE = "97"
 
 _FLASH_MS = 2200
 _REGISTERED_FLASH_MS = 650  # dentro da faixa pedida (500-800ms): rápido, não bloqueia o próximo giro
-_NUMBER_POP_MS = 380  # "pop" sutil no número central ao trocar — no lugar, não tela cheia
+_NUMBER_POP_MS = 380  # "pop" sutil no número central ao trocar
 _ADMIN_FADE_MS = 200
 _BANNER_ANIM_MS = 200
 _SPLASH_CROSSFADE_MS = 420
 
-# Animação de revelação em tela cheia, disparada a cada giro registrado com sucesso. Pedido
-# explícito: enquanto ela está em tela, o sistema NÃO deve permitir registrar um novo número —
-# `_confirm_input` bloqueia o ENTER de confirmação nesses 5s (mantendo o que já foi digitado, o
-# operador só precisa apertar ENTER de novo depois). Diferente do que essa constante sugeria antes
-# (a revelação já existiu como "puramente visual, nunca bloqueia" numa iteração anterior do
-# projeto) — undo (`DEL DEL`/`-` `ENTER`) continua funcionando normalmente durante a revelação, só
-# o registro de um giro NOVO é que fica bloqueado.
-_REVEAL_MS = 5000
-_REVEAL_PULSE_HZ = 0.6  # ciclos/segundo -- "levemente aumentando e diminuindo"
-# "Verde gramado" de mesa de cassino — deliberadamente diferente do GREEN vivo já usado pro
-# indicador de zero/sistema-ok, que precisa continuar sendo um acento, não um fundo de tela cheia.
-_FELT_GREEN = (13, 92, 63)
+# -- animação de revelação em tela cheia (disparada a cada giro registrado) -------------------
+#
+# Timeline aprovada pelo cliente via `tools/mockup_reveal_animation.py` (vídeo revisado quadro a
+# quadro antes de qualquer código aqui), fases sequenciais em milissegundos a partir do registro
+# do giro:
+#   0                    -> _REVEAL_LOGO_ZOOM_MS       logo cresce (zoom/splash) sozinho na tela
+#   ...                  -> _REVEAL_LOGO_END_MS         logo segura, depois some com fade
+#   _REVEAL_LOGO_END_MS  -> _REVEAL_CONTENT_START_MS    roleta+número+badges entram em fade-in
+#                                                        (a roleta já vinha girando, invisível)
+#   _REVEAL_CONTENT_START_MS -> _REVEAL_MS              número exibido, pulsando com glow dourado;
+#                                                        a roleta gira livre e só desacelera/para
+#                                                        nos últimos `_REVEAL_WHEEL_DECEL_MS`
+# Mais um crossfade de `_REVEAL_GLOBAL_FADE_MS` entrando e saindo dessa cena a partir da tela
+# normal (não um fade pro preto). Pedido explícito: enquanto a revelação está em tela, o sistema
+# NÃO deve permitir registrar um número novo -- `_confirm_input` bloqueia o ENTER de confirmação
+# durante toda essa janela (mantendo o que já foi digitado, o operador só precisa apertar ENTER de
+# novo depois). Undo (`DEL DEL`/`-` `ENTER`) continua funcionando normalmente durante a revelação,
+# só o registro de um giro NOVO é que fica bloqueado.
+_REVEAL_GLOBAL_FADE_MS = 300
+_REVEAL_LOGO_ZOOM_MS = 400
+_REVEAL_LOGO_HOLD_MS = 10_000
+_REVEAL_LOGO_FADE_MS = 600
+_REVEAL_LOGO_END_MS = _REVEAL_LOGO_ZOOM_MS + _REVEAL_LOGO_HOLD_MS + _REVEAL_LOGO_FADE_MS  # 11 000
+_REVEAL_CONTENT_FADE_MS = 300
+_REVEAL_CONTENT_START_MS = _REVEAL_LOGO_END_MS + _REVEAL_CONTENT_FADE_MS  # 11 300
+_REVEAL_NUMBER_DISPLAY_MS = 8000
+_REVEAL_MS = _REVEAL_CONTENT_START_MS + _REVEAL_NUMBER_DISPLAY_MS  # 19 300 -- duração total
+_REVEAL_WHEEL_DECEL_MS = 2000  # a roleta só desacelera/para nos últimos 2s da animação inteira
+_REVEAL_WHEEL_DECEL_START_MS = _REVEAL_MS - _REVEAL_WHEEL_DECEL_MS
+_REVEAL_WHEEL_SPIN_DEG_S = 480.0  # rápido, ~1.3 voltas/segundo -- "igual a roleta do jogo"
+_REVEAL_PULSE_PERIOD_MS = 1200
 
-# Histórico em duas colunas (abaixo do último resultado): preto à esquerda, vermelho à direita,
-# zero centralizado entre as duas — mesma convenção espacial usada na revelação em tela cheia.
-_HISTORY_TITLE_SIZE = 38  # era 30 — "aumente a descrição do texto último número"
-# 0.70 original ("30% menor que o último número"), depois -30% em cima disso a pedido (0.70*0.7=0.49).
-_HISTORY_ROW_FONT_RATIO = 0.49
+# Rotacionar uma imagem circular grande (a roleta ocupa 60% da altura da tela) em tempo real, TODO
+# frame, por ~14s de animação seria caro demais pra um Pi 3 -- em vez disso, um número pequeno de
+# ângulos é pré-rotacionado UMA VEZ (numa resolução pequena, não na resolução final de tela) e
+# cacheado em memória; a cada frame só se escolhe o ângulo mais próximo e faz UM `smoothscale` até
+# o tamanho final (bem mais barato que rotacionar na resolução final). 36 passos = 10° de
+# resolução -- imperceptível numa roleta girando rápido, e mesmo desacelerando só fica levemente
+# "granulado" no último instante antes de parar. 500px de origem mantém o cache inteiro (36
+# frames) em ~35MB, bem dentro do orçamento de memória do Pi 3.
+_REVEAL_WHEEL_ROTATION_STEPS = 36
+_REVEAL_WHEEL_SOURCE_PX = 500
 
-# Faixas fixas (topo: limites de aposta; rodapé: barra de estatística) — o resto da altura vai
-# inteiro para as três colunas, que são a maior parte do contrato visual do cliente. A faixa
-# "giros da sessão" (contador + tira de chips) foi eliminada — mais espaço pra coluna central
-# ("ÚLTIMO RESULTADO" + histórico em três raias), que é a informação mais importante da tela.
-_LIMITS_FRACTION = 0.10
-_BOTTOM_BAR_PX = 270
+# Histórico central: três raias verticais (preto/zero/vermelho) com nós/conectores dourados --
+# tons diferentes do GOLD "cheio" usado em bordas/linhas de accent (mais claro/mais escuro,
+# aprovados no mockup como o par nó+conector que dá o acabamento "trilho premium").
+_NODE_GOLD = (214, 178, 104)
+_CONNECTOR_GOLD = (196, 160, 92)
 
-# Sombra suave atrás dos badges/cartões e do número em destaque -- pedido explícito do cliente
-# pra dar profundidade/sofisticação, aplicado em todas as telas com cartões (badges FRIO/QUENTE,
-# cartões da barra de estatística, banner de aviso). Preto semi-transparente (não um preto opaco
-# genérico): sobre o fundo já bem escuro do app, opaco ficaria quase invisível ou criaria um
-# degradê visível demais -- translúcido lê como profundidade sutil em qualquer fundo por baixo.
+# Sombra suave atrás dos badges/cartões — pedido explícito do cliente pra dar profundidade/
+# sofisticação. Preto semi-transparente (não um preto opaco genérico): sobre o fundo já bem escuro
+# do app, opaco ficaria quase invisível ou criaria um degradê visível demais -- translúcido lê como
+# profundidade sutil em qualquer fundo por baixo.
 _SHADOW_ALPHA = 90
 _SHADOW_COLOR = (0, 0, 0, _SHADOW_ALPHA)
 
@@ -161,6 +188,17 @@ def _blit_outlined_text(surface: pygame.Surface, font: pygame.font.Font, text: s
     surface.blit(fill_surf, fill_surf.get_rect(center=center))
 
 
+def _draw_text(surface: pygame.Surface, font: pygame.font.Font, text: str,
+                pos: tuple[int, int], color, anchor: str = "topleft") -> pygame.Rect:
+    """Texto simples (sem contorno) posicionado por âncora (`midtop`, `topright`, `center`...),
+    devolvendo o Rect renderizado -- usado pelo cabeçalho/painéis/estatísticas pra encadear
+    posições (ex.: "o próximo elemento começa onde este terminou") sem recalcular tamanhos."""
+    surf = font.render(text, True, color)
+    rect = surf.get_rect(**{anchor: pos})
+    surface.blit(surf, rect)
+    return rect
+
+
 class RouletteDisplay:
     def __init__(self, config: Config, db: Database):
         self.config = config
@@ -177,9 +215,18 @@ class RouletteDisplay:
         self.screen, self.theme = create_screen(config, f"{config.casino_name} - {config.roulette_name}")
         self.clock = pygame.time.Clock()
 
-        # Carregada uma única vez (não por frame) — pré-escalada para a coluna QUENTE, onde a
-        # referência do cliente posiciona a logo (abaixo dos números quentes).
-        self.logo_surface = self._prepare_logo(config, self.theme)
+        # Assets pré-renderizados (bordas/bisel dourado, chips, glows, roleta recortada do print
+        # de referência do cliente) -- gerados uma única vez por `tools/build_ui_assets.py`,
+        # cacheados aqui por (nome, tamanho): cada composição cara acontece só na primeira vez que
+        # aquele tamanho é pedido, todo frame depois é só um `blit()` (ver `app/ui/assets.py`).
+        self.ui_assets = UiAssets(config.resolve(config.assets_dir) / "ui")
+
+        # Logo real do estabelecimento: carregada em resolução original uma única vez; a versão
+        # ESCALADA é recalculada só quando o tamanho-alvo pedido muda (ver `_scaled_logo`) --
+        # normalmente uma única vez também, já que a área que ela precisa preencher (rodapé do
+        # painel QUENTE) não muda depois que a tela está de pé.
+        self._logo_raw = load_image(config.resolve(config.assets_dir) / "logo.png")
+        self._logo_scaled_cache: dict[tuple[int, int], pygame.Surface] = {}
 
         # Sintetiza o beep uma única vez aqui, não a cada revelação — falha (sem placa de som) só
         # desativa o som, nunca trava o boot (ver app/ui/sound.py).
@@ -190,13 +237,29 @@ class RouletteDisplay:
         self.admin_open = False
         self.admin_fade = Tween(0.0, 0.0, 1)  # 0 = fechado, 1 = totalmente aberto
 
-        # Revelação em tela cheia pós-giro — timer de renderização (ver `_reveal_active`).
-        # `_confirm_input` bloqueia o registro de um giro novo enquanto ela está ativa (pedido
-        # explícito) — digitar continua funcionando, só o ENTER de confirmação fica sem efeito
-        # até os 5s acabarem.
+        # Revelação em tela cheia pós-giro — timer de renderização (ver `_reveal_active` e as
+        # constantes `_REVEAL_*` acima para as fases). `_confirm_input` bloqueia o registro de um
+        # giro novo enquanto ela está ativa (pedido explícito) — digitar continua funcionando, só
+        # o ENTER de confirmação fica sem efeito até a animação acabar.
         self.reveal_number: int | None = None
         self.reveal_color: str | None = None
         self.reveal_started_at = 0
+        # Snapshot da tela normal capturado no INSTANTE em que a revelação começa -- usado como
+        # pano de fundo do crossfade de entrada (`_REVEAL_GLOBAL_FADE_MS`). O crossfade de saída
+        # não precisa de snapshot: a essa altura o giro já foi registrado e `_render_main_screen`
+        # desenha o estado atual (que já é o que deve aparecer por baixo do fade-out).
+        self._reveal_entry_backdrop: pygame.Surface | None = None
+
+        # Roleta do print de referência do cliente, rotacionada em ângulos discretos (não a cada
+        # frame) -- ver `_wheel_rotation_frame` para o motivo (custo de rotacionar uma imagem
+        # circular grande em tempo real, todo frame, por ~14s de animação, seria pesado demais
+        # pra um Pi 3; um `smoothscale` por frame a partir de um cache pequeno de ângulos
+        # pré-rotacionados é a mesma técnica "computa uma vez, reusa" do resto do projeto,
+        # aplicada aqui de um jeito que cabe no orçamento de memória do Pi 3).
+        self._wheel_rotation_cache: list[pygame.Surface] | None = None
+        # Degradê escuro (70%->0%, esquerda->centro da tela) por cima da roleta -- construído uma
+        # única vez (tamanho fixo pra um dado tamanho de tela) e reusado em todo frame da revelação.
+        self._reveal_gradient_cache: pygame.Surface | None = None
 
         self.input_buffer = ""
         self.pending_undo = False
@@ -223,13 +286,20 @@ class RouletteDisplay:
         # instante de destaque no próprio número, no lugar onde ele já mora).
         self.number_anim_start = 0
 
-        # Sombras suaves atrás dos badges/cartões -- pedido explícito do cliente pra dar
+        # Sombras suaves atrás de cartões/banners -- pedido explícito do cliente pra dar
         # profundidade/sofisticação à interface. Cacheadas por tamanho (não mudam frame a frame,
         # só quando a janela é redimensionada/rotacionada), pra não alocar uma Surface nova a cada
         # frame no Pi 3.
-        self._trapezoid_shadow_cache: dict[tuple[int, int, float], pygame.Surface] = {}
         self._rect_shadow_cache: dict[tuple[int, int, int], pygame.Surface] = {}
         self._glow_cache: dict[int, pygame.Surface] = {}
+
+        # Fundo em degradê (mesmo asset `card_gradient.png`) recortado numa máscara arredondada --
+        # usado por praticamente todo cartão/badge/painel/pill da tela nova. Cacheado pelo
+        # resultado FINAL (já com a máscara aplicada) por (largura, altura, raio): como o layout é
+        # fixo pra um dado tamanho de tela, o mesmo (w, h, raio) se repete todo frame -- computado
+        # uma vez, reusado o resto da execução.
+        self._card_mask_cache: dict[tuple[int, int, int], pygame.Surface] = {}
+        self._card_bg_cache: dict[tuple[int, int, int], pygame.Surface] = {}
 
         # Indicador discreto "● SISTEMA OK": só fica verde quando as duas coisas forem verdade —
         # a última escrita no banco teve sucesso E uma checagem periódica leve confirma que o
@@ -243,17 +313,21 @@ class RouletteDisplay:
         self.state: DisplayState = self.service.get_display_state()
         self.running = True
 
-    @staticmethod
-    def _prepare_logo(config: Config, theme: Theme) -> pygame.Surface | None:
-        image = load_image(config.resolve(config.assets_dir) / "logo.png")
-        if image is None:
+    def _scaled_logo(self, max_size: tuple[int, int]) -> pygame.Surface | None:
+        """Logo real do estabelecimento, redimensionada pra caber em `max_size` preservando a
+        proporção -- cacheada por tamanho-alvo (o painel QUENTE só pede um tamanho por execução,
+        já que a área disponível não muda depois que a tela está de pé)."""
+        if self._logo_raw is None:
             return None
-        col_w = theme.width / 3
-        max_w = col_w * 0.8
-        max_h = theme.height * 0.16
-        ratio = min(max_w / image.get_width(), max_h / image.get_height())
-        size = (max(1, int(image.get_width() * ratio)), max(1, int(image.get_height() * ratio)))
-        return pygame.transform.smoothscale(image, size)
+        key = max_size
+        cached = self._logo_scaled_cache.get(key)
+        if cached is not None:
+            return cached
+        ratio = min(max_size[0] / self._logo_raw.get_width(), max_size[1] / self._logo_raw.get_height())
+        size = (max(1, int(self._logo_raw.get_width() * ratio)), max(1, int(self._logo_raw.get_height() * ratio)))
+        scaled = pygame.transform.smoothscale(self._logo_raw, size)
+        self._logo_scaled_cache[key] = scaled
+        return scaled
 
     # -- lifecycle ---------------------------------------------------------------
 
@@ -451,11 +525,12 @@ class RouletteDisplay:
             return
         if self._reveal_active(pygame.time.get_ticks()):
             # Pedido explícito: não permitir registrar um número novo enquanto o anterior ainda
-            # está na tela de revelação (5s). O buffer digitado fica intacto -- o operador só
-            # precisa apertar ENTER de novo quando a revelação acabar, sem perder o que já tinha
-            # digitado. A própria tela cheia da revelação já deixa claro pro operador por que o
-            # ENTER não teve efeito, então não duplicamos isso com um banner (que nem apareceria:
-            # a revelação substitui o frame inteiro, ver `_render`).
+            # está na animação de revelação (~19s, ver as constantes `_REVEAL_*`). O buffer
+            # digitado fica intacto -- o operador só precisa apertar ENTER de novo quando a
+            # revelação acabar, sem perder o que já tinha digitado. A própria tela cheia da
+            # revelação já deixa claro pro operador por que o ENTER não teve efeito, então não
+            # duplicamos isso com um banner (que nem apareceria: a revelação substitui o frame
+            # inteiro, ver `_render`).
             return
         number = int(self.input_buffer)
         self.input_buffer = ""
@@ -478,12 +553,15 @@ class RouletteDisplay:
             f"REGISTRADO • {spin.number}", NUMBER_COLOR_MAP[spin.color],
             duration_ms=_REGISTERED_FLASH_MS, font_size=44,
         )
-        # Revelação em tela cheia (5s), ver `_reveal_active`. Só chegamos aqui se ela NÃO estava
-        # ativa (bloqueada logo no topo de `_confirm_input`) -- então isto sempre inicia um ciclo
-        # novo, nunca sobrescreve uma revelação em andamento.
+        # Revelação em tela cheia (ver `_reveal_active`/as constantes `_REVEAL_*`). Só chegamos
+        # aqui se ela NÃO estava ativa (bloqueada logo no topo de `_confirm_input`) -- então isto
+        # sempre inicia um ciclo novo, nunca sobrescreve uma revelação em andamento. O snapshot da
+        # tela normal (já com este giro refletido, por causa do `_refresh_state()` acima) vira o
+        # pano de fundo do crossfade de entrada da animação.
         self.reveal_number = spin.number
         self.reveal_color = spin.color
         self.reveal_started_at = pygame.time.get_ticks()
+        self._reveal_entry_backdrop = self._capture_main_screen()
         sound.play_reveal_beep()
 
     def _confirm_minus_command(self) -> None:
@@ -595,263 +673,88 @@ class RouletteDisplay:
 
     # -- rendering ---------------------------------------------------------------
 
+    def _layout_bands(self) -> tuple[int, int, int]:
+        """Faixas fixas (cabeçalho/rodapé) que o layout aprovado usa em toda tela normal --
+        centralizado aqui porque tanto `_render_main_screen` quanto o banner (`_draw_banner`,
+        que precisa saber onde o rodapé de estatísticas começa pra se ancorar acima dele)
+        precisam do mesmo cálculo."""
+        theme = self.theme
+        header_h = theme.px(round(theme.height * 0.105))
+        stats_h = theme.px(round(theme.height * 0.155))
+        gap = theme.px(12)
+        return header_h, stats_h, gap
+
     def _render(self) -> None:
         screen = self.screen
         theme = self.theme
         now = pygame.time.get_ticks()
 
         if self._reveal_active(now):
-            # Substitui o frame inteiro (não desenha por cima) — mais barato e evita qualquer
-            # vazamento visual do placar por baixo/nas bordas do círculo.
-            self._draw_full_reveal(now)
+            self._draw_reveal(now - self.reveal_started_at)
             if self.admin_open or self.admin_fade.value() > 0.001:
                 self.admin.render(screen, theme, reveal=self.admin_fade.value())
             pygame.display.flip()
             return
 
-        screen.fill(BG)
-
-        limits_h = int(theme.height * _LIMITS_FRACTION)
-        bottom_h = theme.px(_BOTTOM_BAR_PX)
-        # "Giros da sessão" + tira de chips foi eliminada — o espaço que ela ocupava agora é da
-        # coluna central (mais altura pra "ÚLTIMO RESULTADO" e pro histórico em três raias).
-        columns_h = theme.height - limits_h - bottom_h
-
-        self._draw_limits(pygame.Rect(0, 0, theme.width, limits_h))
-        self._draw_columns(pygame.Rect(0, limits_h, theme.width, columns_h))
-        self._draw_bottom_bar(pygame.Rect(0, theme.height - bottom_h, theme.width, bottom_h))
-
-        self._draw_overlays()
-        self._draw_system_indicator()
+        self._render_main_screen(screen)
 
         if self.admin_open or self.admin_fade.value() > 0.001:
             self.admin.render(screen, theme, reveal=self.admin_fade.value())
 
         pygame.display.flip()
 
-    # -- revelação em tela cheia (pós-giro) ------------------------------------------
-
-    def _draw_full_reveal(self, now: int) -> None:
-        """Fundo verde-gramado, número em branco com borda preta dentro de um círculo grande na
-        cor do número, classificação embaixo — número e círculo sempre centralizados na tela
-        (horizontal e vertical, não importa a cor), tudo dimensionado pra ser lido de longe.
-        Pulsa suavemente (`_REVEAL_PULSE_HZ`) enquanto fica em tela."""
+    def _render_main_screen(self, surface: pygame.Surface) -> None:
+        """A tela normal (cabeçalho, colunas, estatísticas, banners) desenhada em `surface` --
+        extraído de `_render` pra também servir de pano de fundo do crossfade de entrada/saída da
+        revelação (ver `_draw_reveal`/`_capture_main_screen`), sem duplicar a lógica de layout."""
         theme = self.theme
-        screen = self.screen
-        number = self.reveal_number
-        color_name = self.reveal_color
-        screen.fill(_FELT_GREEN)
+        surface.fill(BG)
+        header_h, stats_h, gap = self._layout_bands()
+        body_top = header_h + gap
+        stats_top = theme.height - stats_h
+        body_bottom = stats_top - gap
 
-        elapsed_s = (now - self.reveal_started_at) / 1000.0
-        pulse = 1.0 + 0.05 * math.sin(2 * math.pi * _REVEAL_PULSE_HZ * elapsed_s)
+        self._draw_header(surface, pygame.Rect(0, 0, theme.width, header_h))
+        self._draw_body(surface, pygame.Rect(0, body_top, theme.width, body_bottom - body_top))
+        self._draw_stats(surface, pygame.Rect(0, stats_top, theme.width, stats_h))
+        self._draw_overlays(surface)
 
-        cx, cy = theme.width // 2, theme.height // 2
+    def _capture_main_screen(self) -> pygame.Surface:
+        surface = pygame.Surface(self.screen.get_size())
+        self._render_main_screen(surface)
+        return surface
 
-        # Era 0.22 -- "bem maiores" pedido explicitamente, pra ler de longe (parede de cassino).
-        base_r = int(min(theme.width, theme.height) * 0.34)
-        r = max(1, int(base_r * pulse))
-        pygame.draw.circle(screen, COLOR_MAP[color_name], (cx, cy), r)
+    # -- helpers de desenho reusados por várias seções (cabeçalho, painéis, revelação) --------
 
-        number_font = theme.font(max(20, int(r * 1.05)), bold=True)
-        outline_px = max(2, theme.px(4))
-        _blit_outlined_text(screen, number_font, str(number), (cx, cy),
-                             fill=TEXT_PRIMARY, outline=BLACK, outline_px=outline_px)
+    def _card_mask(self, w: int, h: int, radius: int) -> pygame.Surface:
+        key = (w, h, radius)
+        mask = self._card_mask_cache.get(key)
+        if mask is None:
+            mask = pygame.Surface((w, h), pygame.SRCALPHA)
+            pygame.draw.rect(mask, (255, 255, 255, 255), mask.get_rect(), border_radius=radius)
+            self._card_mask_cache[key] = mask
+        return mask
 
-        # Classificação proporcional ao tamanho do círculo (não mais um tamanho fixo) -- "dados
-        # abaixo dos números devem ser grandes também, proporcionais ao tamanho do círculo".
-        tag_font = theme.font(max(20, int(r * 0.20)), bold=True)
-        tag_gap = int(r * 0.16)
-        tag_y = cy + r + tag_gap
-        for tag_text, tag_color in self._reveal_tags(number, color_name):
-            tag_surf = tag_font.render(tag_text, True, tag_color)
-            screen.blit(tag_surf, tag_surf.get_rect(midtop=(cx, tag_y)))
-            tag_y += tag_surf.get_height() + theme.px(10)
+    def _blit_card_bg(self, surface: pygame.Surface, rect: pygame.Rect, radius: int) -> None:
+        """Fundo em degradê sutil (mesmo asset em todo cartão/badge/painel/pill da tela),
+        recortado numa máscara arredondada -- cacheado pelo resultado final por (largura, altura,
+        raio), computado uma única vez por tamanho e reusado todo frame depois disso."""
+        key = (rect.width, rect.height, radius)
+        bg = self._card_bg_cache.get(key)
+        if bg is None:
+            bg = self.ui_assets.scaled("card_gradient.png", (rect.width, rect.height)).copy()
+            bg.blit(self._card_mask(rect.width, rect.height, radius), (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+            self._card_bg_cache[key] = bg
+        surface.blit(bg, rect.topleft)
 
-    @staticmethod
-    def _reveal_tags(number: int, color_name: str) -> list[tuple[str, tuple[int, int, int]]]:
-        """Mesmos termos já usados na barra de estatística (ÍMPAR/PAR/VERMELHO/ZERO/PRETO/
-        MENOR/MAIOR) — zero só mostra "ZERO" (paridade/faixa não se aplicam a zero, mesma
-        convenção já usada em app/models/roulette_data.py e no módulo de analytics)."""
-        color_tag = {"red": ("VERMELHO", RED), "black": ("PRETO", TEXT_PRIMARY), "green": ("ZERO", GREEN)}
-        tags = [color_tag[color_name]]
-        if number != 0:
-            parity = roulette_data.parity_of(number)
-            tags.append(("ÍMPAR", CYAN) if parity == "odd" else ("PAR", CYAN))
-            range_ = roulette_data.range_of(number)
-            tags.append(("MENOR", ORANGE) if range_ == "low" else ("MAIOR", ORANGE))
-        return tags
-
-    def _draw_limits(self, rect: pygame.Rect) -> None:
-        """Zona 1: APOSTA MIN. à esquerda, APOSTA MAX. à direita, valores em azul/ciano."""
-        theme = self.theme
-        margin = theme.px(24)
-        label_font = theme.font(40, bold=True)
-        value_font = theme.font(82, bold=True)
-
-        min_label = label_font.render("APOSTA MIN.", True, TEXT_PRIMARY)
-        min_value = value_font.render(f"{self.config.currency} {self.config.min_bet}", True, CYAN)
-        max_label = label_font.render("APOSTA MAX.", True, TEXT_PRIMARY)
-        max_value = value_font.render(f"{self.config.currency} {self.config.max_bet}", True, CYAN)
-
-        block_h = min_label.get_height() + min_value.get_height() + theme.px(4)
-        top = rect.centery - block_h // 2
-
-        self.screen.blit(min_label, (margin, top))
-        self.screen.blit(min_value, (margin, top + min_label.get_height() + theme.px(4)))
-        self.screen.blit(max_label, max_label.get_rect(topright=(rect.width - margin, top)))
-        self.screen.blit(
-            max_value, max_value.get_rect(topright=(rect.width - margin, top + max_label.get_height() + theme.px(4)))
-        )
-        pygame.draw.line(self.screen, PANEL_BORDER, (0, rect.bottom), (rect.width, rect.bottom), 1)
-
-    # -- as três colunas (frio / resultado atual / quente) -------------------------
-
-    def _draw_columns(self, rect: pygame.Rect) -> None:
-        theme = self.theme
-        col_w = rect.width // 3
-        frio_rect = pygame.Rect(rect.left, rect.top, col_w, rect.height)
-        center_rect = pygame.Rect(rect.left + col_w, rect.top, col_w, rect.height)
-        quente_rect = pygame.Rect(rect.left + col_w * 2, rect.top, rect.width - col_w * 2, rect.height)
-
-        pad_v = theme.px(16)
-        for x in (frio_rect.right, quente_rect.left):
-            pygame.draw.line(self.screen, PANEL_BORDER, (x, rect.top + pad_v), (x, rect.bottom - pad_v), 1)
-
-        # "300 GIROS" é o tamanho MÁXIMO da janela de análise (config), não quantos giros já
-        # aconteceram de fato — mostrar o valor fixo do config aqui enganaria o operador logo no
-        # início da sessão (ex.: "300 GIROS" com só 4 giros registrados). O rótulo mostra quantos
-        # giros estão realmente entrando na conta agora, que nunca passa do tamanho da janela.
-        # Rótulos explícitos sobre o que cada coluna realmente mede — nem FRIO nem QUENTE são
-        # previsão (roleta não tem memória): FRIO é há quantos giros aquele número não sai,
-        # QUENTE é quantas vezes ele saiu dentro da janela estatística configurada. O algoritmo
-        # não muda aqui, só a legenda que explica o número mostrado embaixo de cada badge.
-        window = min(self.state.total_spins, self.config.statistics_window)
-        # SILVER (FRIO) / GOLD (QUENTE): linha de destaque no topo e na base de cada badge —
-        # pedido explícito do cliente, puramente decorativo (não muda o dado exibido).
-        self._draw_badge_column(frio_rect, "FRIO", "GIROS SEM SAIR", CYAN, self.state.cold,
-                                 self.config.cold_numbers_count, unit="GIROS", accent_line=SILVER)
-        self._draw_center_number(center_rect)
-        self._draw_badge_column(quente_rect, "QUENTE", "OCORRÊNCIAS", RED, self.state.hot,
-                                 self.config.hot_numbers_count, unit="VEZES", show_logo=True,
-                                 caption=f"últimos {window} giros", accent_line=GOLD)
-
-    def _draw_badge_column(self, rect: pygame.Rect, title: str, subtitle: str, color,
-                            entries: list[tuple[int, int]], slot_count: int, unit: str,
-                            show_logo: bool = False, caption: str | None = None,
-                            accent_line=None) -> None:
-        """Coluna FRIO/QUENTE: título + subtítulo, depois `slot_count` badges trapezoidais
-        (número dentro, cor real do card) com a contagem e a unidade escritas abaixo de cada
-        badge — exatamente a estrutura da referência do cliente. `caption` é uma segunda linha
-        opcional, menor e discreta (ex.: tamanho da janela estatística) — não substitui o
-        subtítulo principal, só adiciona contexto sem virar um segundo título."""
-        theme = self.theme
-
-        title_font = theme.font(38, bold=True)
-        title_surf = title_font.render(title, True, color)
-        self.screen.blit(title_surf, title_surf.get_rect(midtop=(rect.centerx, rect.top + theme.px(8))))
-
-        subtitle_font = theme.font(21, bold=True)
-        subtitle_surf = subtitle_font.render(subtitle, True, TEXT_PRIMARY)
-        sub_y = rect.top + theme.px(8) + title_surf.get_height() + theme.px(2)
-        self.screen.blit(subtitle_surf, subtitle_surf.get_rect(midtop=(rect.centerx, sub_y)))
-
-        content_top = sub_y + subtitle_surf.get_height() + theme.px(2)
-        if caption:
-            caption_font = theme.font(15, bold=False)
-            caption_surf = caption_font.render(caption, True, TEXT_SECONDARY)
-            content_top += caption_surf.get_height()
-            self.screen.blit(caption_surf, caption_surf.get_rect(midtop=(rect.centerx, content_top - caption_surf.get_height())))
-
-        # Badges compactos e agrupados logo abaixo do subtítulo — igual à referência do cliente,
-        # que NÃO espalha os 3 badges pela altura inteira da coluna. Dimensão do trapézio segue a
-        # largura da coluna (não a altura disponível), então o tamanho não varia com slot_count.
-        # Levemente maiores que antes (0.62->0.70 da largura da coluna) para reduzir a área morta
-        # que sobrava entre os badges e o rodapé da coluna, sem adicionar nenhum elemento novo.
-        content_top += theme.px(20)
-        badge_w = int(rect.width * 0.70)
-        badge_h = int(badge_w / 1.7)
-        badge_gap = theme.px(30)
-
-        # Era 0.62 -- "os numeros das sessoes quente/frio devem ser maiores".
-        number_font = theme.font(int(badge_h * 0.80), bold=True)
-        number_outline_px = max(1, theme.px(2))
-        count_font = theme.font(36, bold=True)
-        unit_font = theme.font(26, bold=True)
-
-        y = content_top
-        for i in range(max(1, slot_count)):
-            badge_rect = pygame.Rect(0, 0, badge_w, badge_h)
-            badge_rect.midtop = (rect.centerx, int(y))
-
-            if i < len(entries):
-                number, value = entries[i]
-                self._draw_trapezoid(badge_rect, color, accent_line=accent_line)
-                # Branco com borda preta -- pedido explícito, no lugar do texto escuro sobre o
-                # preenchimento vibrante do badge (menos contraste/legibilidade à distância).
-                _blit_outlined_text(self.screen, number_font, str(number), badge_rect.center,
-                                     fill=TEXT_PRIMARY, outline=BLACK, outline_px=number_outline_px)
-
-                count_surf = count_font.render(str(value), True, TEXT_PRIMARY)
-                count_y = badge_rect.bottom + theme.px(6)
-                self.screen.blit(count_surf, count_surf.get_rect(midtop=(rect.centerx, count_y)))
-                unit_surf = unit_font.render(unit, True, TEXT_SECONDARY)
-                unit_y = count_y + count_surf.get_height() + theme.px(2)
-                self.screen.blit(unit_surf, unit_surf.get_rect(midtop=(rect.centerx, unit_y)))
-                y = unit_y + unit_surf.get_height() + badge_gap
-            else:
-                y = badge_rect.bottom + badge_gap
-
-        if show_logo and self.logo_surface is not None:
-            # Ancorada perto do rodapé (não centralizada no vão vazio) — mantém a logo "grudada"
-            # na base da coluna como na referência, em vez de flutuar solta no meio do espaço
-            # vazio quando a tela real de TV (bem mais alta que o mockup) sobra mais altura.
-            margin_bottom = theme.px(28)
-            min_cy = y + self.logo_surface.get_height() // 2
-            logo_cy = max(min_cy, rect.bottom - margin_bottom - self.logo_surface.get_height() // 2)
-            self.screen.blit(self.logo_surface, self.logo_surface.get_rect(center=(rect.centerx, logo_cy)))
-
-    def _draw_trapezoid(self, rect: pygame.Rect, color, taper: float = 0.16, accent_line=None) -> None:
-        """Card trapezoidal (mais largo em cima, mais estreito embaixo), igual aos badges da
-        referência do cliente — não um retângulo arredondado genérico.
-
-        Desenha em `self.screen`, não em `pygame.display.get_surface()`: com `screen_rotation`
-        configurado (ver app/ui/rotation.py) os dois deixam de ser a mesma superfície — `self.screen`
-        é a superfície "lógica" que o resto do app desenha, e é ela que precisa receber o trapézio
-        pra ele aparecer rotacionado corretamente junto com o resto do frame.
-
-        `accent_line`: cor opcional de uma linha fina no topo e na base do trapézio (dourada nos
-        badges QUENTE, prateada nos FRIO) — puramente decorativo, pedido explícito do cliente."""
-        theme = self.theme
-        shadow_offset = theme.px(5)
-        shadow = self._trapezoid_shadow_surface(rect.width, rect.height, taper)
-        self.screen.blit(shadow, (rect.left + shadow_offset, rect.top + shadow_offset))
-
-        top_left = (rect.left, rect.top)
-        top_right = (rect.right, rect.top)
-        inset = int(rect.width * taper)
-        bottom_right = (rect.right - inset, rect.bottom)
-        bottom_left = (rect.left + inset, rect.bottom)
-        pygame.draw.polygon(self.screen, color, [top_left, top_right, bottom_right, bottom_left])
-        if accent_line is not None:
-            line_px = max(2, theme.px(3))
-            pygame.draw.line(self.screen, accent_line, top_left, top_right, line_px)
-            pygame.draw.line(self.screen, accent_line, bottom_left, bottom_right, line_px)
-
-    def _trapezoid_shadow_surface(self, w: int, h: int, taper: float) -> pygame.Surface:
-        """Sombra do trapézio, cacheada por tamanho (ver comentário no `__init__` sobre não alocar
-        Surface nova a cada frame no Pi 3)."""
-        key = (w, h, taper)
-        surf = self._trapezoid_shadow_cache.get(key)
-        if surf is None:
-            surf = pygame.Surface((w, h), pygame.SRCALPHA)
-            inset = int(w * taper)
-            pygame.draw.polygon(surf, _SHADOW_COLOR, [(0, 0), (w, 0), (w - inset, h), (inset, h)])
-            self._trapezoid_shadow_cache[key] = surf
-        return surf
+    def _blit_hbar(self, surface: pygame.Surface, name: str, rect: pygame.Rect) -> None:
+        img = self.ui_assets.scaled(name, (max(1, rect.width), max(1, rect.height)))
+        surface.blit(img, rect.topleft)
 
     def _rect_shadow_surface(self, w: int, h: int, radius: int) -> pygame.Surface:
-        """Sombra de um cartão retangular (cantos arredondados), mesma lógica de cache acima --
-        usada na barra de estatística e no banner de avisos."""
+        """Sombra de um cartão retangular (cantos arredondados), cacheada por tamanho (ver
+        comentário no `__init__` sobre não alocar Surface nova a cada frame no Pi 3) -- usada no
+        banner de avisos."""
         key = (w, h, radius)
         surf = self._rect_shadow_cache.get(key)
         if surf is None:
@@ -862,8 +765,8 @@ class RouletteDisplay:
 
     def _glow_surface(self, radius: int) -> pygame.Surface:
         """Círculo branco cheio, cacheado por raio -- a opacidade real é ajustada por frame via
-        `set_alpha()` em `_draw_center_number` (ver comentário lá: dá o brilho suave que aparece e
-        desvanece junto com o "pop" do número, sem alocar Surface nova a cada frame)."""
+        `set_alpha()` em `_draw_center` (dá o brilho suave que aparece e desvanece junto com o
+        "pop" do número, sem alocar Surface nova a cada frame)."""
         surf = self._glow_cache.get(radius)
         if surf is None:
             surf = pygame.Surface((radius * 2, radius * 2), pygame.SRCALPHA)
@@ -871,236 +774,607 @@ class RouletteDisplay:
             self._glow_cache[radius] = surf
         return surf
 
-    # -- número atual (coluna central) ---------------------------------------------
+    @staticmethod
+    def _reveal_tags(number: int, color_name: str) -> list[tuple[str, tuple[int, int, int]]]:
+        """Classificação (cor + ímpar/par + faixa) usada tanto pelas pills abaixo do círculo
+        central quanto pela revelação em tela cheia — zero só mostra "ZERO" (paridade/faixa não
+        se aplicam a zero, mesma convenção já usada em app/models/roulette_data.py)."""
+        color_tag = {"red": ("VERMELHO", RED), "black": ("PRETO", OFF_WHITE), "green": ("ZERO", GREEN)}
+        tags = [color_tag[color_name]]
+        if number != 0:
+            parity = roulette_data.parity_of(number)
+            tags.append(("ÍMPAR", CYAN) if parity == "odd" else ("PAR", CYAN))
+            range_ = roulette_data.range_of(number)
+            tags.append(("MENOR", ORANGE) if range_ == "low" else ("MAIOR", ORANGE))
+        return tags
 
-    def _draw_center_number(self, rect: pygame.Rect) -> None:
+    # -- cabeçalho: limites de aposta + indicador de sistema -------------------------------
+
+    def _draw_header(self, surface: pygame.Surface, rect: pygame.Rect) -> None:
+        """APOSTA MÍN. no canto esquerdo, APOSTA MÁX. no canto direito, cada uma em um cartão sem
+        borda; "SISTEMA OK" discreto no canto inferior direito, colado na linha dourada que
+        fecha o cabeçalho -- layout aprovado em `tools/mockup_ui.py`."""
+        theme = self.theme
+        header_h = rect.height
+        card_top = theme.px(8)
+        card_w, card_h = theme.px(268), theme.px(158)
+        label_font, value_font = theme.font(34, bold=True), theme.font(66, bold=True)
+
+        left_rect = pygame.Rect(theme.px(20), card_top, card_w, card_h)
+        right_rect = pygame.Rect(theme.width - theme.px(20) - card_w, card_top, card_w, card_h)
+        for r, (label, value) in (
+            (left_rect, ("APOSTA MÍN.", f"{self.config.currency} {self.config.min_bet}")),
+            (right_rect, ("APOSTA MÁX.", f"{self.config.currency} {self.config.max_bet}")),
+        ):
+            self._blit_card_bg(surface, r, theme.px(10))
+            _draw_text(surface, label_font, label, (r.centerx, r.top + theme.px(18)), TEXT_SECONDARY, anchor="midtop")
+            _draw_text(surface, value_font, value, (r.centerx, r.top + theme.px(58)), ORANGE, anchor="midtop")
+
+        # "● SISTEMA OK": verde só quando as duas coisas forem verdade -- a última escrita no
+        # banco teve sucesso E a checagem periódica de saúde do SQLite (`self.system_ok`)
+        # também passou. Não é telemetria, só um sinal local rápido de "o painel está realmente
+        # gravando" sem precisar abrir o admin ou ler log.
+        dot_c = (theme.width - theme.px(22), header_h - theme.px(16))
+        dot_color = GREEN if self.system_ok else RED
+        pygame.draw.circle(surface, dot_color, dot_c, theme.px(6))
+        label_text = "SISTEMA OK" if self.system_ok else "SISTEMA COM FALHA"
+        _draw_text(surface, theme.font(17, bold=True), label_text,
+                   (dot_c[0] - theme.px(12), dot_c[1]), TEXT_MUTED, anchor="midright")
+
+        self._blit_hbar(surface, "accent_gold_glow.png", pygame.Rect(0, header_h - theme.px(10), theme.width, theme.px(20)))
+        self._blit_hbar(surface, "accent_gold.png", pygame.Rect(0, header_h - 2, theme.width, 3))
+
+    # -- corpo: FRIO (esquerda) / último resultado (centro) / QUENTE (direita) ---------------
+
+    def _draw_body(self, surface: pygame.Surface, rect: pygame.Rect) -> None:
+        theme = self.theme
+        col_frio_w = round(theme.width * 0.28)
+        col_quente_w = round(theme.width * 0.28)
+        col_center_w = theme.width - col_frio_w - col_quente_w
+        side_pad = theme.px(10)
+
+        frio_panel = pygame.Rect(0, rect.top, col_frio_w, rect.height).inflate(-side_pad * 2, 0)
+        quente_panel = pygame.Rect(col_frio_w + col_center_w, rect.top, col_quente_w, rect.height).inflate(-side_pad * 2, 0)
+        center_col = pygame.Rect(col_frio_w, rect.top, col_center_w, rect.height)
+
+        self._draw_side_panel(surface, frio_panel, "FRIO", "MENOS RECORRENTES", "accent_cold.png",
+                               "ambient_glow_blue.png", "cold_icon.png", self.state.cold,
+                               self.config.cold_numbers_count, "GIROS", CYAN, show_logo=False)
+        self._draw_side_panel(surface, quente_panel, "QUENTE", "MAIS RECORRENTES", "accent_hot.png",
+                               "ambient_glow_red.png", "hot_icon.png", self.state.hot,
+                               self.config.hot_numbers_count, "VEZES", RED, show_logo=True)
+
+        center_content = pygame.Rect(center_col.left + theme.px(8), center_col.top,
+                                      center_col.width - theme.px(16), center_col.height)
+        self._draw_center(surface, center_content)
+
+    def _draw_side_panel(self, surface: pygame.Surface, panel_rect: pygame.Rect, title: str, subtitle: str,
+                          accent_asset: str, glow_asset: str, icon_asset: str,
+                          entries: list[tuple[int, int]], slot_count: int, unit: str, accent_color,
+                          show_logo: bool = False) -> None:
+        """Painel FRIO/QUENTE de ALTURA COMPLETA: título + ícone + subtítulo, depois até
+        `slot_count` linhas ranqueadas ("1º", "2º"...) com o número real dentro de um chip na cor
+        real da roleta (não a cor de acento da coluna) e a contagem à direita. `entries` pode ter
+        menos itens que `slot_count` (sessão ainda no início) -- linhas sem entrada ficam em
+        branco, sem quebrar o espaçamento das linhas seguintes."""
+        theme = self.theme
+        radius = theme.px(16)
+        self._blit_card_bg(surface, panel_rect, radius)
+
+        # Iluminação ambiente discreta na metade inferior do painel -- alpha baixo (ver
+        # `make_ambient_glow` em tools/build_ui_assets.py), um único blit, nunca recalculada.
+        glow_size = int(panel_rect.width * 1.1)
+        glow = self.ui_assets.scaled(glow_asset, (glow_size, glow_size))
+        glow_cy = panel_rect.top + int(panel_rect.height * 0.74)
+        surface.blit(glow, (panel_rect.centerx - glow_size // 2, glow_cy - glow_size // 2))
+
+        glow_bar_asset = accent_asset.replace(".png", "_glow.png")
+        self._blit_hbar(surface, glow_bar_asset, pygame.Rect(panel_rect.left, panel_rect.top - theme.px(8),
+                                                               panel_rect.width, theme.px(16)))
+        self._blit_hbar(surface, accent_asset, pygame.Rect(panel_rect.left, panel_rect.top, panel_rect.width, theme.px(4)))
+        pygame.draw.rect(surface, PANEL_BORDER, panel_rect, width=1, border_radius=radius)
+
+        y = panel_rect.top + theme.px(24)
+        title_font = theme.font(44, bold=True)
+        subtitle_font = theme.font(24, bold=True)
+        title_r = _draw_text(surface, title_font, title, (panel_rect.centerx, y), accent_color, anchor="midtop")
+
+        # Ícone centralizado verticalmente com o TÍTULO (não esticado até o subtítulo).
+        icon_size = theme.px(40)
+        icon_img = self.ui_assets.scaled(icon_asset, (icon_size, icon_size))
+        icon_x = panel_rect.centerx - title_r.width // 2 - icon_size - theme.px(10)
+        surface.blit(icon_img, (icon_x, title_r.centery - icon_size // 2))
+
+        y = title_r.bottom + theme.px(6)
+        subtitle_r = _draw_text(surface, subtitle_font, subtitle, (panel_rect.centerx, y), TEXT_SECONDARY, anchor="midtop")
+
+        y = subtitle_r.bottom + theme.px(16)
+        self._blit_hbar(surface, "separator_fade.png",
+                         pygame.Rect(panel_rect.left + theme.px(16), y, panel_rect.width - theme.px(32), 2))
+        y += theme.px(16)
+
+        row_h = theme.px(148)
+        rank_font = theme.font(31, bold=True)
+        num_font = theme.font(40, bold=True)
+        count_font = theme.font(47, bold=True)
+        unit_font = theme.font(21, bold=True)
+        badge_d = theme.px(78)
+        inset = theme.px(24)
+        number_chip_asset = {"black": "number_chip_black.png", "red": "number_chip_red.png", "green": "number_chip_green.png"}
+
+        rows = max(1, slot_count)
+        for i in range(rows):
+            row = pygame.Rect(panel_rect.left, y, panel_rect.width, row_h)
+
+            if i < len(entries):
+                num, count = entries[i]
+                # Posição do ranking como texto simples ("1º", "2º"...) -- só o NÚMERO da roleta
+                # em si fica dentro de um círculo, na cor real daquele número.
+                rank_r = _draw_text(surface, rank_font, f"{i + 1}º", (row.left + inset, row.centery),
+                                     accent_color, anchor="midleft")
+
+                badge_cx = rank_r.right + theme.px(16) + badge_d // 2
+                badge = self.ui_assets.scaled(number_chip_asset[roulette_data.color_of(num)], (badge_d, badge_d))
+                surface.blit(badge, (badge_cx - badge_d // 2, row.centery - badge_d // 2))
+                _blit_outlined_text(surface, num_font, str(num), (badge_cx, row.centery),
+                                     fill=OFF_WHITE, outline=BLACK, outline_px=0)
+
+                val_x = row.right - inset
+                count_r = _draw_text(surface, count_font, str(count), (val_x, row.centery - theme.px(13)),
+                                      accent_color, anchor="topright")
+                _draw_text(surface, unit_font, unit, (val_x, count_r.bottom + theme.px(2)), TEXT_MUTED, anchor="topright")
+
+            if i < rows - 1:
+                self._blit_hbar(surface, "separator_fade.png",
+                                 pygame.Rect(panel_rect.left + theme.px(16), row.bottom, panel_rect.width - theme.px(32), 2))
+            y = row.bottom
+
+        if show_logo:
+            # Ancorada perto do rodapé (não centralizada no vão vazio) -- a logo fica "grudada"
+            # na base do painel, preenchendo o espaço que sobra abaixo da última linha.
+            margin_bottom = theme.px(28)
+            zone_w = panel_rect.width - theme.px(16)
+            zone_h = max(1, panel_rect.bottom - margin_bottom - y)
+            logo = self._scaled_logo((zone_w, zone_h))
+            if logo is not None:
+                logo_cy = max(y + logo.get_height() // 2, panel_rect.bottom - margin_bottom - logo.get_height() // 2)
+                surface.blit(logo, logo.get_rect(center=(panel_rect.centerx, logo_cy)))
+
+    # -- último resultado (círculo central) + histórico -------------------------------------
+
+    def _draw_center(self, surface: pygame.Surface, rect: pygame.Rect) -> None:
         theme = self.theme
         last = self.state.last_spin
         now = pygame.time.get_ticks()
 
-        # Era 30px — "aumente a descrição do texto último número".
-        title_font = theme.font(_HISTORY_TITLE_SIZE, bold=True)
-        title_surf = title_font.render("ÚLTIMO RESULTADO", True, TEXT_PRIMARY)
-        self.screen.blit(title_surf, title_surf.get_rect(midtop=(rect.centerx, rect.top + theme.px(8))))
+        y = rect.top + theme.px(10)
+        title_font = theme.font(48, bold=True)
+        title_r = _draw_text(surface, title_font, "ÚLTIMO RESULTADO", (rect.centerx, y), OFF_WHITE, anchor="midtop")
 
         if self.awaiting_spin:
             blink_on = (now // 500) % 2 == 0
             if blink_on:
-                # Sem "●" Unicode: a fonte padrão do pygame não tem esse glifo (mesmo problema dos
-                # naipes) — o ponto é desenhado como um círculo vetorial ao lado do texto.
-                badge_font = theme.font(20, bold=True)
-                badge_surf = badge_font.render("AGUARDANDO", True, ORANGE)
-                badge_y = rect.top + theme.px(8) + title_surf.get_height() + theme.px(4)
-                dot_r = theme.px(4)
-                text_rect = badge_surf.get_rect(
-                    midtop=(rect.centerx + dot_r + theme.px(3), badge_y)
-                )
-                pygame.draw.circle(
-                    self.screen, ORANGE, (text_rect.left - dot_r - theme.px(3), text_rect.centery), dot_r
-                )
-                self.screen.blit(badge_surf, text_rect)
+                # Sem "●" Unicode: a fonte padrão do pygame não garante esse glifo -- desenhado
+                # como um círculo vetorial ao lado do texto.
+                badge_font = theme.font(22, bold=True)
+                badge_surf = badge_font.render("AGUARDANDO NOVO GIRO", True, ORANGE)
+                badge_y = title_r.bottom + theme.px(10)
+                dot_r = theme.px(5)
+                text_rect = badge_surf.get_rect(midtop=(rect.centerx + dot_r + theme.px(4), badge_y))
+                pygame.draw.circle(surface, ORANGE, (text_rect.left - dot_r - theme.px(4), text_rect.centery), dot_r)
+                surface.blit(badge_surf, text_rect)
 
-        # Alinhado com o topo dos badges de FRIO/QUENTE (não centralizado na coluna) — na
-        # referência do cliente o número grande fica agrupado no alto, junto com as outras colunas,
-        # deixando a metade inferior livre (mesmo espaço vazio que sobra ao lado dos badges).
-        content_top = rect.top + theme.px(8) + title_surf.get_height() + theme.px(60)
-
-        # 0.34->0.40 da altura da coluna: número central maior preenche melhor o espaço
-        # disponível (reduz a sensação de "área morta" logo abaixo dele) sem descer o bloco
-        # de posição — continua alinhado ao topo, junto com os badges de FRIO/QUENTE, como no
-        # contrato visual do cliente. Calculado independente de `last`/animação (tamanho "de
-        # repouso") para a linha divisória abaixo não pular de posição a cada giro.
-        reference_size = min(int(rect.height * 0.40), int(rect.width * 1.0))
-        # Histórico de pedidos: +30%, +30% de novo (1.3*1.3=1.69), depois -30% em cima disso
-        # (1.69*0.7=1.183) — "ÚLTIMO RESULTADO" continua sendo a informação de maior destaque, só
-        # um pouco menor que a versão anterior. Usado só pro número grande: o histórico abaixo usa
-        # `reference_size` (o tamanho "original") pra calcular a fonte das linhas.
-        base_size = int(reference_size * 1.183)
-
-        history_outline_px = max(1, theme.px(2))  # mesmo valor usado em _draw_center_history
-
-        # Altura REAL renderizada do número, não `base_size` (o "tamanho de fonte" pedido ao
-        # theme.font(), que passa de novo por `theme.px()` internamente — em telas com escala
-        # diferente de 1080 de referência, o pixel real renderizado pode ficar bem menor que
-        # `base_size` sugere). Medida uma vez, num tamanho "de repouso" (sem a escala da animação
-        # de pop), pra linha divisória não pular de posição a cada giro nem abrir um vão enorme.
-        steady_font = theme.font(max(20, base_size), bold=True)
-        number_pixel_height = steady_font.render("8", True, TEXT_PRIMARY).get_height()
-
-        if last is not None:
-            # "Preto" fica preto de verdade aqui (não branco, como em NUMBER_COLOR_MAP — usado só
-            # neste destaque, não em outros lugares que consomem NUMBER_COLOR_MAP) — o contorno
-            # branco acima já garante contraste contra o fundo escuro, então não precisa mais do
-            # branco como preenchimento de substituição.
-            color = BLACK if last.color == "black" else NUMBER_COLOR_MAP[last.color]
-            elapsed = now - self.number_anim_start
-            t = min(1.0, elapsed / _NUMBER_POP_MS) if elapsed >= 0 else 1.0
-            pop = ease_out_back(t) if elapsed < _NUMBER_POP_MS else 1.0
-            scale = 0.72 + 0.28 * pop
-
-            number_font = theme.font(max(20, int(base_size * scale)), bold=True)
-            # Contorno sempre BRANCO (pedido explícito — era preto, igual à revelação em tela
-            # cheia) com o dobro da grossura do contorno usado no histórico abaixo.
-            center = (rect.centerx, content_top + number_pixel_height // 2)
-
-            # Brilho suave atrás do número, só durante a janela do "pop" (mesmo elapsed/t de cima)
-            # -- desvanece junto com ele, reforçando visualmente "acabou de mudar" sem virar uma
-            # animação nova e separada pra acompanhar.
-            if elapsed < _NUMBER_POP_MS:
-                glow_alpha = int(130 * (1.0 - t))
-                if glow_alpha > 0:
-                    glow_r = int(number_pixel_height * 0.85)
-                    glow = self._glow_surface(glow_r)
-                    glow.set_alpha(glow_alpha)
-                    self.screen.blit(glow, (center[0] - glow_r, center[1] - glow_r))
-
-            _blit_outlined_text(self.screen, number_font, str(last.number), center,
-                                 fill=color, outline=TEXT_PRIMARY, outline_px=history_outline_px * 2)
-        else:
-            hint_font = theme.font(26, bold=True)
+        if last is None:
+            hint_font = theme.font(30, bold=True)
             hint = hint_font.render("AGUARDANDO", True, TEXT_MUTED)
             hint2 = hint_font.render("PRIMEIRO GIRO", True, TEXT_MUTED)
-            self.screen.blit(hint, hint.get_rect(midtop=(rect.centerx, content_top)))
-            self.screen.blit(hint2, hint2.get_rect(midtop=(rect.centerx, content_top + hint.get_height())))
+            hint_y = title_r.bottom + theme.px(80)
+            surface.blit(hint, hint.get_rect(midtop=(rect.centerx, hint_y)))
+            surface.blit(hint2, hint2.get_rect(midtop=(rect.centerx, hint_y + hint.get_height() + theme.px(4))))
+            history_rect = pygame.Rect(rect.left, hint_y + hint.get_height() * 2 + theme.px(40),
+                                        rect.width, rect.bottom - (hint_y + hint.get_height() * 2 + theme.px(40)))
+            self._draw_center_history(surface, history_rect)
+            return
 
-        # Linha divisória + histórico em três raias (preto/vermelho, zero centralizado) no espaço
-        # que sobrava vazio abaixo do número — ver `_draw_center_history`. Gap BEM reduzido (era
-        # px(24), depois px(10)) pra colar a linha no número e sobrar o máximo de altura possível
-        # pro histórico — "preenchido com os números que foram lançados antes". A margem de
-        # `history_outline_px * 2` garante espaço pro contorno (agora mais grosso) do número não
-        # ficar cortado pela própria linha.
-        divider_y = content_top + number_pixel_height + history_outline_px * 2 + theme.px(3)
-        pygame.draw.line(
-            self.screen, PANEL_BORDER, (rect.left + theme.px(16), divider_y), (rect.right - theme.px(16), divider_y), 1,
-        )
-        history_rect = pygame.Rect(rect.left, divider_y + theme.px(6), rect.width, rect.bottom - (divider_y + theme.px(6)))
-        self._draw_center_history(history_rect, reference_size)
+        last_color = last.color
+        badge_asset = {"red": "result_badge_red.png", "black": "result_badge_black.png",
+                       "green": "result_badge_green.png"}[last_color]
 
-    def _draw_center_history(self, rect: pygame.Rect, last_number_base_size: int) -> None:
-        """Histórico recente em três "raias" verticais dentro do que sobra da coluna central:
-        preto à esquerda, vermelho à direita, zero centralizado — mesma convenção espacial da
-        revelação em tela cheia. Cada LINHA representa um giro (mais recente no topo, sempre —
-        `state.history` já vem nessa ordem); dentro da linha, o número aparece só na raia da sua
-        cor, e as outras duas ficam em branco — um "roadmap" de zigue-zague, não três listas
-        independentes por cor, pra ficar fácil de ler de relance qual cor saiu quando (pedido
-        explícito: "o do meio ou a lateral na posição paralela devem ficar em branco"). Limitado a
-        quantas linhas couberem na altura disponível — mesmo espírito "sempre limitado, nunca uma
-        lista infinita" já usado pelos badges de FRIO/QUENTE."""
+        # "Pop" sutil ao trocar de resultado (ease-out com leve overshoot) -- só o TAMANHO
+        # VISUAL do aro/número escala; a posição (cy/tag_y, calculada a partir do diâmetro BASE)
+        # fica parada, senão o histórico abaixo pularia de lugar a cada giro.
+        elapsed = now - self.number_anim_start
+        t = min(1.0, elapsed / _NUMBER_POP_MS) if elapsed >= 0 else 1.0
+        pop = ease_out_back(t) if elapsed < _NUMBER_POP_MS else 1.0
+        pop_scale = 0.88 + 0.12 * pop
+
+        base_diameter = min(int(rect.width * 0.86), int(theme.px(380)))
+        badge_diameter = round(base_diameter * pop_scale)
+        badge_size = int(badge_diameter * 1.60)  # o PNG já inclui a margem do halo dourado
+        cx = rect.centerx
+        cy = title_r.bottom + theme.px(34) + int(base_diameter * 0.60)
+
+        if elapsed < _NUMBER_POP_MS:
+            glow_alpha = int(130 * (1.0 - t))
+            if glow_alpha > 0:
+                glow_r = int(base_diameter * 0.6)
+                glow = self._glow_surface(glow_r)
+                glow.set_alpha(glow_alpha)
+                surface.blit(glow, (cx - glow_r, cy - glow_r))
+
+        badge = self.ui_assets.scaled(badge_asset, (badge_size, badge_size))
+        surface.blit(badge, (cx - badge_size // 2, cy - badge_size // 2))
+
+        num_font = theme.font(int(badge_diameter * 0.76), bold=True)
+        _blit_outlined_text(surface, num_font, str(last.number), (cx, cy), fill=OFF_WHITE, outline=BLACK, outline_px=0)
+
+        # O aro dourado se estende bem além do círculo preenchido (halo/bisel do asset) -- a
+        # folga é medida a partir de ~0.60*diâmetro (a borda externa visível do aro), não da
+        # metade do diâmetro do preenchimento.
+        tag_y = cy + int(base_diameter * 0.60) + theme.px(34)
+        tags = self._reveal_tags(last.number, last_color)
+        pill_font = theme.font(26, bold=True)
+        pill_gap = theme.px(10)
+        pill_h = theme.px(42)
+        widths = [pill_font.size(label)[0] + theme.px(28) for label, _ in tags]
+        px_x = cx - (sum(widths) + pill_gap * (len(tags) - 1)) // 2
+        for (label, color), pw in zip(tags, widths):
+            pill = pygame.Rect(px_x, tag_y, pw, pill_h)
+            self._blit_card_bg(surface, pill, theme.px(18))
+            pygame.draw.rect(surface, color, pill, width=2, border_radius=theme.px(18))
+            _draw_text(surface, pill_font, label, pill.center, color, anchor="center")
+            px_x += pw + pill_gap
+
+        hist_top = tag_y + pill_h + theme.px(18)
+        history_rect = pygame.Rect(rect.left, hist_top, rect.width, rect.bottom - hist_top)
+        self._draw_center_history(surface, history_rect)
+
+    def _draw_center_history(self, surface: pygame.Surface, rect: pygame.Rect) -> None:
+        """REGRA FUNCIONAL IMUTÁVEL: três raias -- preto esquerda, zero centro, vermelho direita
+        -- mais recente no topo, uma linha por giro, nunca duas listas paralelas, nunca
+        interligadas numa linha central. Cada raia é uma linha dourada fina com fade nas duas
+        pontas, um nó dourado em cada posição, ligado à sua bolinha (ou ao marcador vazio) por um
+        conector horizontal curto. Numerais SEMPRE off-white, independente da cor do chip.
+        Limitado a quantas linhas couberem na altura disponível -- nunca uma lista infinita."""
         theme = self.theme
+        if rect.height <= 0:
+            return
         history = self.state.history  # mais recente primeiro
-        if not history or rect.height <= 0:
-            return
 
-        row_font_size = max(12, int(last_number_base_size * _HISTORY_ROW_FONT_RATIO))
-        row_font = theme.font(row_font_size, bold=True)
-        row_h = row_font.get_linesize() + theme.px(4)
-        max_rows = max(0, rect.height // row_h)
-        if max_rows == 0:
-            return
+        y = rect.top
+        _draw_text(surface, theme.font(32, bold=True), "HISTÓRICO", (rect.centerx, y), TEXT_SECONDARY, anchor="midtop")
+        y += theme.px(40)
 
-        lane = {
-            "black": (rect.left + rect.width // 4, BLACK),
-            "red": (rect.right - rect.width // 4, RED),
-            "green": (rect.centerx, GREEN),
+        lane_x = {
+            "black": rect.left + rect.width // 4,
+            "green": rect.centerx,
+            "red": rect.right - rect.width // 4,
         }
-        outline_px = max(1, theme.px(2))
+        chip_asset = {"black": "history_chip_black.png", "green": "history_chip_green.png", "red": "history_chip_red.png"}
 
-        for i, spin in enumerate(history[:max_rows]):
-            y = rect.top + i * row_h + row_h // 2
-            cx, fill = lane[spin.color]
-            _blit_outlined_text(self.screen, row_font, str(spin.number), (cx, y),
-                                 fill=fill, outline=TEXT_PRIMARY, outline_px=outline_px)
+        lanes_top = y
+        lanes_bottom = rect.bottom
+        d = theme.px(76)
+        row_h = int(d * 1.28)
+        n_rows = max(1, (lanes_bottom - lanes_top) // row_h)
+        visible = history[:n_rows]
 
-    # -- barra de estatística (rodapé) ----------------------------------------------
+        spine_h = n_rows * row_h
+        if spine_h > 0:
+            fade_src = self.ui_assets.scaled("accent_gold.png", (spine_h, theme.px(3)))
+            fade_img = pygame.transform.rotate(fade_src, 90)
+            for x in lane_x.values():
+                surface.blit(fade_img, (x - fade_img.get_width() // 2, lanes_top))
 
-    def _draw_bottom_bar(self, rect: pygame.Rect) -> None:
-        """Zona 5: sete cartões arredondados (ÍMPAR/PAR/VERMELHO/ZERO/PRETO/MENOR/MAIOR), cada um
-        com borda e fundo sutilmente tingido na cor da própria categoria — não mais só
-        VERMELHO/ZERO preenchidos e o resto neutro. PRETO usa branco (sem "preto" na paleta,
-        igual ao número central) e MENOR/MAIOR usam laranja como cor de categoria própria (não
-        ligada ao "quente", que agora é vermelho).
+        hist_font = theme.font(int(d * 0.54), bold=True)
+        chip_size = int(d * 1.30)
+        node_r = theme.px(4)
+        connector_w = theme.px(2)
+        for i in range(n_rows):
+            yy = lanes_top + i * row_h + row_h // 2
+            spin = visible[i] if i < len(visible) else None
+            active_lane = spin.color if spin is not None else None
+            for lane, x in lane_x.items():
+                is_active = lane == active_lane
+                tick_half = (chip_size // 2 + theme.px(9)) if is_active else theme.px(10)
+                pygame.draw.line(surface, _CONNECTOR_GOLD, (x - tick_half, yy), (x + tick_half, yy), connector_w)
+                pygame.draw.circle(surface, _NODE_GOLD, (x, yy), node_r)
+                if is_active:
+                    chip = self.ui_assets.scaled(chip_asset[lane], (chip_size, chip_size))
+                    surface.blit(chip, (x - chip_size // 2, yy - chip_size // 2))
+                    _blit_outlined_text(surface, hist_font, str(spin.number), (x, yy),
+                                        fill=OFF_WHITE, outline=BLACK, outline_px=1)
 
-        O "ícone" de cada cartão é só texto/forma neutra (nunca naipe de baralho ♦♣♥♠): eram
-        puramente decorativos, sem nenhuma regra do sistema ligada a eles, e um equipamento só de
-        roleta não deveria remeter a jogo de cartas. ZERO/MENOR/MAIOR já usavam número/faixa como
-        "ícone" — ÍMPAR/PAR/VERMELHO/PRETO agora usam um ponto simples na cor da categoria, no
-        mesmo espírito (cor + texto carregam o significado, a forma é só um apoio visual neutro)."""
+    # -- barra de estatísticas (rodapé) ------------------------------------------------------
+
+    def _draw_stats(self, surface: pygame.Surface, rect: pygame.Rect) -> None:
+        """Sete cartões INDIVIDUAIS (ÍMPAR/PAR/VERMELHO/ZERO/PRETO/MENOR/MAIOR), cada um com
+        borda na cor da própria categoria, percentual, contagem bruta real ("141 / 300") e uma
+        barra de progresso -- layout aprovado em `tools/mockup_ui.py`. PRETO usa off-white (sem
+        "preto" na paleta, igual ao número central); MENOR/MAIOR usam laranja como categoria
+        própria (não ligada a QUENTE, que é vermelho). Contagens/percentuais vêm direto das
+        `BucketStats` já calculadas pelo serviço -- nenhum dado novo, só uma segunda forma de
+        expressar o mesmo número que o percentual já mostra."""
         theme = self.theme
         s = self.state
-        pygame.draw.line(self.screen, PANEL_BORDER, (0, rect.top), (rect.width, rect.top), 1)
+        window = min(s.total_spins, self.config.statistics_window)
+
+        title_font = theme.font(30, bold=True)
+        subtitle_font = theme.font(24, bold=True)
+        title_s = title_font.render("ESTATÍSTICAS", True, TEXT_PRIMARY)
+        subtitle_s = subtitle_font.render(f"ÚLTIMOS {window} GIROS", True, TEXT_SECONDARY)
+        mid_gap = theme.px(16)
+        dot_r = theme.px(3)
+        total_w = title_s.get_width() + mid_gap * 2 + dot_r * 2 + subtitle_s.get_width()
+        max_h = max(title_s.get_height(), subtitle_s.get_height())
+        y = rect.top
+        x = rect.centerx - total_w // 2
+        surface.blit(title_s, (x, y + (max_h - title_s.get_height()) // 2))
+        x += title_s.get_width() + mid_gap
+        pygame.draw.circle(surface, GOLD, (x + dot_r, y + max_h // 2), dot_r)
+        x += dot_r * 2 + mid_gap
+        surface.blit(subtitle_s, (x, y + (max_h - subtitle_s.get_height()) // 2))
+
+        line_y = y + max_h // 2
+        edge_gap = theme.px(22)
+        line_w = (rect.width - total_w) // 2 - edge_gap - theme.px(24)
+        if line_w > theme.px(20):
+            gold_line = self.ui_assets.scaled("accent_gold.png", (line_w, 3))
+            left_x = rect.centerx - total_w // 2 - edge_gap
+            right_x = rect.centerx + total_w // 2 + edge_gap
+            surface.blit(gold_line, (left_x - line_w, line_y - 1))
+            surface.blit(pygame.transform.flip(gold_line, True, False), (right_x, line_y - 1))
+            pygame.draw.circle(surface, GOLD, (left_x - theme.px(8), line_y), dot_r)
+            pygame.draw.circle(surface, GOLD, (right_x + theme.px(8), line_y), dot_r)
+
+        cards_top = y + max_h + theme.px(22)
+        gutter = theme.px(7)
+        radius = theme.px(12)
+        unit_w = rect.width / 7
+        card_h = max(1, min(theme.px(150), rect.bottom - cards_top))
 
         cells = [
-            ("ÍMPAR", f"{s.parity.percentage('odd')}%", "dot", CYAN),
-            ("PAR", f"{s.parity.percentage('even')}%", "dot", CYAN),
-            ("VERMELHO", f"{s.color.percentage('red')}%", "dot", RED),
-            ("ZERO", f"{s.color.percentage('green')}%", "zero", GREEN),
-            ("PRETO", f"{s.color.percentage('black')}%", "dot", TEXT_PRIMARY),
-            ("MENOR", f"{s.range_.percentage('low')}%", "1–18", ORANGE),
-            ("MAIOR", f"{s.range_.percentage('high')}%", "19–36", ORANGE),
+            ("ÍMPAR", s.parity.percentage("odd"), CYAN, s.parity.counts.get("odd", 0), s.parity.total),
+            ("PAR", s.parity.percentage("even"), CYAN, s.parity.counts.get("even", 0), s.parity.total),
+            ("VERMELHO", s.color.percentage("red"), RED, s.color.counts.get("red", 0), s.color.total),
+            ("ZERO", s.color.percentage("green"), GREEN, s.color.counts.get("green", 0), s.color.total),
+            ("PRETO", s.color.percentage("black"), OFF_WHITE, s.color.counts.get("black", 0), s.color.total),
+            ("MENOR", s.range_.percentage("low"), ORANGE, s.range_.counts.get("low", 0), s.range_.total),
+            ("MAIOR", s.range_.percentage("high"), ORANGE, s.range_.counts.get("high", 0), s.range_.total),
         ]
-        value_font = theme.font(46, bold=True)
-        label_font = theme.font(28, bold=True)
-        cell_w = rect.width / len(cells)
-        gutter = theme.px(6)
-        radius = theme.px(16)
+        value_font = theme.font(38, bold=True)
+        label_font = theme.font(17, bold=True)
+        frac_font = theme.font(19, bold=True)
 
-        shadow_offset = theme.px(5)
-        for i, (label, value, icon, accent) in enumerate(cells):
-            outer = pygame.Rect(int(i * cell_w), rect.top, int(cell_w) + 1, rect.height)
-            card = outer.inflate(-gutter * 2, -theme.px(16))
+        for i, (label, pct, accent, count, total) in enumerate(cells):
+            outer = pygame.Rect(round(i * unit_w), cards_top, round(unit_w) + 1, card_h)
+            card = outer.inflate(-gutter * 2, 0)
+            self._blit_card_bg(surface, card, radius)
+            pygame.draw.rect(surface, accent, card, width=2, border_radius=radius)
 
-            shadow = self._rect_shadow_surface(card.width, card.height, radius)
-            self.screen.blit(shadow, (card.left + shadow_offset, card.top + shadow_offset))
+            _draw_text(surface, value_font, f"{pct}%", (card.centerx, card.top + theme.px(14)), accent, anchor="midtop")
+            _draw_text(surface, label_font, label, (card.centerx, card.top + theme.px(58)), TEXT_SECONDARY, anchor="midtop")
+            _draw_text(surface, frac_font, f"{count} / {total}", (card.centerx, card.top + theme.px(82)),
+                       TEXT_PRIMARY, anchor="midtop")
 
-            pygame.draw.rect(self.screen, self._tint(accent, 0.16), card, border_radius=radius)
-            pygame.draw.rect(self.screen, accent, card, width=2, border_radius=radius)
+            bar_h = theme.px(6)
+            bar_top = min(card.top + theme.px(118), card.bottom - bar_h - theme.px(10))
+            bar_rect = pygame.Rect(card.left + theme.px(14), bar_top, card.width - theme.px(28), bar_h)
+            pygame.draw.rect(surface, (46, 50, 56), bar_rect, border_radius=bar_h // 2)
+            fill_w = max(bar_h, int(bar_rect.width * min(1.0, pct / 100)))
+            pygame.draw.rect(surface, accent, pygame.Rect(bar_rect.left, bar_rect.top, fill_w, bar_h),
+                              border_radius=bar_h // 2)
 
-            value_surf = value_font.render(value, True, accent)
-            self.screen.blit(value_surf, value_surf.get_rect(center=(card.centerx, card.top + theme.px(46))))
-            label_surf = label_font.render(label, True, accent)
-            self.screen.blit(label_surf, label_surf.get_rect(center=(card.centerx, card.top + theme.px(86))))
+    # -- revelação em tela cheia (pós-giro) ---------------------------------------------------
+    #
+    # Ver as constantes `_REVEAL_*` no topo do módulo para a timeline completa (aprovada via
+    # `tools/mockup_reveal_animation.py`, revisada quadro a quadro antes de qualquer código
+    # aqui): logo sozinho -> roleta/número/badges entram em fade-in (roleta desacelera só nos
+    # últimos segundos) -> número exibido, pulsando -- com um crossfade real (não pro preto)
+    # entrando e saindo dessa cena a partir da tela normal.
 
-            icon_center = (card.centerx, card.bottom - theme.px(50))
-            if icon in ("zero", "1–18", "19–36"):
-                # Mesmo tamanho do valor (primeira linha do cartão) — ZERO/MENOR/MAIOR não têm
-                # ícone gráfico, então o texto precisa carregar o mesmo peso visual.
-                icon_font = theme.font(46, bold=True)
-                text = "0" if icon == "zero" else icon
-                icon_surf = icon_font.render(text, True, accent)
-                self.screen.blit(icon_surf, icon_surf.get_rect(center=icon_center))
-            else:
-                # Ponto neutro (não naipe de baralho) — só reforça a cor da categoria.
-                pygame.draw.circle(self.screen, accent, icon_center, theme.px(16))
-                pygame.draw.circle(self.screen, BG, icon_center, theme.px(7))
+    def _draw_reveal(self, elapsed: int) -> None:
+        screen = self.screen
 
-    @staticmethod
-    def _tint(color, t: float):
-        """Mistura `color` com o fundo escuro do painel — usado pro preenchimento sutil dos
-        cartões da barra de estatística (borda e texto ficam na cor cheia, só o fundo é diluído)."""
-        return tuple(int(BG[i] + (color[i] - BG[i]) * t) for i in range(3))
+        if elapsed < _REVEAL_GLOBAL_FADE_MS:
+            blend = elapsed / _REVEAL_GLOBAL_FADE_MS
+        elif elapsed > _REVEAL_MS - _REVEAL_GLOBAL_FADE_MS:
+            blend = (_REVEAL_MS - elapsed) / _REVEAL_GLOBAL_FADE_MS
+        else:
+            blend = 1.0
+        blend = max(0.0, min(1.0, blend))
 
-    def _draw_system_indicator(self) -> None:
-        """"● SISTEMA OK" discreto no canto — verde só quando a última escrita no banco teve
-        sucesso E a checagem periódica de saúde do SQLite (`self.system_ok`, ver a property)
-        também passou. Não é telemetria, só um sinal local rápido de "o painel está realmente
-        gravando" sem precisar abrir o admin ou ler log."""
+        if blend >= 0.999:
+            self._draw_reveal_content(screen, elapsed)
+            return
+
+        # Crossfade: o pano de fundo é a tela normal de verdade -- o snapshot capturado no
+        # instante em que a revelação começou (entrada) ou o estado atual, renderizado ao vivo
+        # (saída) -- nunca um fade genérico pro preto.
+        if elapsed < _REVEAL_GLOBAL_FADE_MS and self._reveal_entry_backdrop is not None:
+            screen.blit(self._reveal_entry_backdrop, (0, 0))
+        else:
+            self._render_main_screen(screen)
+
+        content = pygame.Surface(screen.get_size())
+        self._draw_reveal_content(content, elapsed)
+        content.set_alpha(round(255 * blend))
+        screen.blit(content, (0, 0))
+
+    def _draw_reveal_content(self, surface: pygame.Surface, elapsed: int) -> None:
         theme = self.theme
-        color = GREEN if self.system_ok else RED
-        r = theme.px(6)
-        cx = theme.px(18)
-        # Logo acima da barra de estatística, no vão vazio da coluna FRIO — o rodapé em si já é
-        # ocupado pelos cartões coloridos até bem perto da borda.
-        cy = theme.height - theme.px(_BOTTOM_BAR_PX) - theme.px(24)
-        pygame.draw.circle(self.screen, color, (cx, cy), r)
-        if not self.system_ok:
-            font = theme.font(14, bold=True)
-            label = font.render("SISTEMA COM FALHA", True, RED)
-            self.screen.blit(label, (cx + r + theme.px(8), cy - label.get_height() // 2))
+        surface.fill(BG)  # mesmo fundo da tela normal, sem trocar de cor/tema -- pedido explícito
+        alpha = self._reveal_scene_alpha(elapsed)
+        if alpha > 0:
+            pulse_scale, glow_t = self._reveal_pulse_state(elapsed)
+            layer = pygame.Surface((theme.width, theme.height), pygame.SRCALPHA)
+            self._draw_reveal_wheel(layer, elapsed)
+            layer.blit(self._reveal_gradient(), (0, 0))
+            self._draw_reveal_badge(layer, pulse_scale, glow_t)
+            layer.set_alpha(alpha)
+            surface.blit(layer, (0, 0))
+        self._draw_reveal_logo(surface, elapsed)
+
+    def _reveal_scene_alpha(self, elapsed: int) -> int:
+        """Roleta + degradê + badge/número/pills só existem DEPOIS que o logo suma -- fade-in
+        único de `_REVEAL_CONTENT_FADE_MS`, tudo junto (uma única camada com um alpha só, não
+        cada elemento fadeando separado)."""
+        if elapsed <= _REVEAL_LOGO_END_MS:
+            return 0
+        if elapsed >= _REVEAL_CONTENT_START_MS:
+            return 255
+        return int(255 * (elapsed - _REVEAL_LOGO_END_MS) / _REVEAL_CONTENT_FADE_MS)
+
+    def _reveal_pulse_state(self, elapsed: int) -> tuple[float, float]:
+        """Só pulsa durante a janela de exibição do número (depois que tudo termina de entrar).
+        `scale` é a leve variação de tamanho do badge/número (~3.5%); `glow_t` (0..1) modula a
+        intensidade do glow dourado extra na borda, respirando junto."""
+        if elapsed < _REVEAL_CONTENT_START_MS:
+            return 1.0, 0.0
+        phase = 2 * math.pi * (elapsed - _REVEAL_CONTENT_START_MS) / _REVEAL_PULSE_PERIOD_MS
+        scale = 1.0 + 0.035 * math.sin(phase)
+        glow_t = (math.sin(phase) + 1) / 2
+        return scale, glow_t
+
+    def _wheel_rotation_frames(self) -> list[pygame.Surface]:
+        frames = self._wheel_rotation_cache
+        if frames is None:
+            raw = self.ui_assets.raw("roulette_wheel.png")
+            base = pygame.transform.smoothscale(raw, (_REVEAL_WHEEL_SOURCE_PX, _REVEAL_WHEEL_SOURCE_PX))
+            step_deg = 360 / _REVEAL_WHEEL_ROTATION_STEPS
+            frames = [pygame.transform.rotozoom(base, i * step_deg, 1.0) for i in range(_REVEAL_WHEEL_ROTATION_STEPS)]
+            self._wheel_rotation_cache = frames
+        return frames
+
+    def _reveal_wheel_angle(self, elapsed: int) -> float:
+        """Gira à velocidade total o tempo todo -- só desacelera de velocidade total até ZERO ao
+        longo de `_REVEAL_WHEEL_DECEL_MS`, nos últimos segundos da animação inteira (não mais
+        atrelada ao fade-in do número). Desaceleração linear na VELOCIDADE -> posição é a
+        integral dessa velocidade, dando uma curva suave até parar exatamente no fim."""
+        t = elapsed / 1000.0
+        decel_start_s = _REVEAL_WHEEL_DECEL_START_MS / 1000.0
+        decel_s = _REVEAL_WHEEL_DECEL_MS / 1000.0
+        if t <= decel_start_s:
+            return -(t * _REVEAL_WHEEL_SPIN_DEG_S) % 360
+        u = min(1.0, (t - decel_start_s) / decel_s)
+        base = decel_start_s * _REVEAL_WHEEL_SPIN_DEG_S
+        extra = _REVEAL_WHEEL_SPIN_DEG_S * decel_s * (u - u * u / 2)
+        return -(base + extra) % 360
+
+    def _draw_reveal_wheel(self, surface: pygame.Surface, elapsed: int) -> None:
+        """Roleta extraída do print de referência do cliente: 3/5 da altura da tela, 60% cortada
+        pra fora da borda esquerda -- só a fatia direita (40%) fica visível. Um único
+        `smoothscale` por frame a partir do ângulo pré-rotacionado mais próximo (ver
+        `_wheel_rotation_frames`), nunca uma rotação em tempo real na resolução final."""
+        theme = self.theme
+        diameter = round(theme.height * 0.6)
+        frames = self._wheel_rotation_frames()
+        step_deg = 360 / _REVEAL_WHEEL_ROTATION_STEPS
+        idx = round(self._reveal_wheel_angle(elapsed) / step_deg) % _REVEAL_WHEEL_ROTATION_STEPS
+        frame = pygame.transform.smoothscale(frames[idx], (diameter, diameter))
+        cy = theme.height / 2
+        cx = -0.10 * diameter
+        surface.blit(frame, frame.get_rect(center=(round(cx), round(cy))))
+
+    def _reveal_gradient(self) -> pygame.Surface:
+        """70% escuro -> 0% escuro, esquerda -> centro da tela (metade esquerda, onde a roleta
+        gira) -- construído uma única vez por tamanho de tela, reusado em todo frame."""
+        if self._reveal_gradient_cache is not None:
+            return self._reveal_gradient_cache
+        theme = self.theme
+        half_w = theme.width // 2
+        grad = pygame.Surface((half_w, theme.height), pygame.SRCALPHA)
+        max_alpha = int(255 * 0.70)
+        for x in range(half_w):
+            a = int(max_alpha * (1 - x / half_w))
+            pygame.draw.line(grad, (0, 0, 0, a), (x, 0), (x, theme.height))
+        self._reveal_gradient_cache = grad
+        return grad
+
+    def _draw_reveal_badge(self, surface: pygame.Surface, pulse_scale: float, glow_t: float) -> None:
+        """Círculo/aro IGUAIS ao "ÚLTIMO RESULTADO" da tela principal (mesmo asset
+        `result_badge_*.png`) -- mantém o padrão visual entre as duas telas. Número dimensionado
+        pra caber DENTRO do círculo (mesma proporção `diâmetro * 0.76` do painel principal), sem
+        exceder. Centralizado na tela (vertical e horizontal), badges empilhados embaixo. Durante
+        a janela de exibição, `pulse_scale`/`glow_t` fazem o conjunto respirar (fora dela vêm
+        neutros e não mudam nada)."""
+        theme = self.theme
+        number = self.reveal_number
+        color = self.reveal_color
+
+        badge_asset = {"red": "result_badge_red.png", "black": "result_badge_black.png",
+                       "green": "result_badge_green.png"}[color]
+
+        base_diameter = theme.px(900)  # era 520 no badge antigo -- +73%, acima do mínimo de +70% pedido
+        diameter = round(base_diameter * pulse_scale)
+        badge_size = int(diameter * 1.60)
+        cx, cy = theme.width // 2, theme.height // 2
+
+        glow_size = int(base_diameter * 2.2)
+        glow = self.ui_assets.scaled("reveal_glow_blue.png", (glow_size, glow_size))
+        surface.blit(glow, (cx - glow_size // 2, cy - glow_size // 2))
+
+        if glow_t > 0:
+            pulse_glow_size = int(diameter * 1.30)
+            pulse_glow = self.ui_assets.scaled("pulse_glow_gold.png", (pulse_glow_size, pulse_glow_size))
+            pulse_glow.set_alpha(int(70 + 160 * glow_t))
+            surface.blit(pulse_glow, (cx - pulse_glow_size // 2, cy - pulse_glow_size // 2))
+
+        badge = self.ui_assets.scaled(badge_asset, (badge_size, badge_size))
+        surface.blit(badge, (cx - badge_size // 2, cy - badge_size // 2))
+
+        num_font = theme.font(int(diameter * 0.76), bold=True)
+        _blit_outlined_text(surface, num_font, str(number), (cx, cy), fill=OFF_WHITE, outline=BLACK, outline_px=0)
+
+        tags = self._reveal_tags(number, color)
+        pill_font = theme.font(30, bold=True)
+        pill_w = theme.px(340)
+        pill_h = theme.px(72)
+        pill_gap = theme.px(16)
+        tag_y = cy + int(base_diameter * 0.60) + theme.px(34)
+        for label, tcolor in tags:
+            pill = pygame.Rect(cx - pill_w // 2, tag_y, pill_w, pill_h)
+            self._blit_card_bg(surface, pill, theme.px(20))
+            pygame.draw.rect(surface, tcolor, pill, width=2, border_radius=theme.px(20))
+            _draw_text(surface, pill_font, label, pill.center, tcolor, anchor="center")
+            tag_y += pill_h + pill_gap
+
+    def _draw_reveal_logo(self, surface: pygame.Surface, elapsed: int) -> None:
+        """Zoom/splash: cresce pequeno e centralizado até o tamanho de destaque (ease-out,
+        sensação de "pop" rápido), segura sozinho na tela, some com fade -- ver as constantes
+        `_REVEAL_LOGO_*`. A versão em escala TOTAL é cacheada (`_scaled_logo`) e só recebe
+        `set_alpha()` durante o "segura"/fade (nenhum recálculo por frame nessa janela, que é a
+        maior parte da fase do logo); só o "zoom" em si (bem curto) escala a cada frame."""
+        if elapsed >= _REVEAL_LOGO_END_MS or self._logo_raw is None:
+            return
+        theme = self.theme
+        target_w = int(theme.width * 0.62)
+        ratio = target_w / self._logo_raw.get_width()
+        target_h = int(self._logo_raw.get_height() * ratio)
+        full = self._scaled_logo((target_w, target_h))
+        if full is None:
+            return
+
+        if elapsed < _REVEAL_LOGO_ZOOM_MS:
+            scale = 0.12 + 0.88 * ease_out_cubic(elapsed / _REVEAL_LOGO_ZOOM_MS)
+            w, h = max(1, int(full.get_width() * scale)), max(1, int(full.get_height() * scale))
+            frame = pygame.transform.smoothscale(full, (w, h))
+            alpha = 255
+        else:
+            frame = full
+            if elapsed < _REVEAL_LOGO_ZOOM_MS + _REVEAL_LOGO_HOLD_MS:
+                alpha = 255
+            else:
+                fade_t = (elapsed - _REVEAL_LOGO_ZOOM_MS - _REVEAL_LOGO_HOLD_MS) / _REVEAL_LOGO_FADE_MS
+                alpha = int(255 * (1 - min(1.0, fade_t)))
+
+        frame.set_alpha(alpha)
+        rect = frame.get_rect(center=(theme.width // 2, theme.height // 2))
+        surface.blit(frame, rect)
 
     # -- avisos/banners -------------------------------------------------------
 
-    def _draw_overlays(self) -> None:
-        theme = self.theme
+    def _draw_overlays(self, surface: pygame.Surface) -> None:
         now = pygame.time.get_ticks()
 
         if self.clear_all_pending:
@@ -1111,23 +1385,26 @@ class RouletteDisplay:
             # a mesma precisão que o código já garante, senão o operador é levado a acreditar que
             # a ação é mais destrutiva do que realmente é.
             key = self._draw_banner(
+                surface,
                 f"REINICIAR SESSÃO? O painel zera (histórico fica arquivado). "
                 f"ENTER confirma • ESC cancela ({secs_left}s)", RED,
                 key="clear_all",
             )
         elif self.minus_buffer is not None:
-            key = self._draw_banner(f"COMANDO: -{self.minus_buffer}_  (ENTER confirma • ESC cancela)", ORANGE, key="minus")
+            key = self._draw_banner(surface, f"COMANDO: -{self.minus_buffer}_  (ENTER confirma • ESC cancela)",
+                                     ORANGE, key="minus")
         elif self.input_buffer:
-            key = self._draw_banner(f"NOVO RESULTADO: {self.input_buffer}", ORANGE, key=f"input:{self.input_buffer}")
+            key = self._draw_banner(surface, f"NOVO RESULTADO: {self.input_buffer}", ORANGE,
+                                     key=f"input:{self.input_buffer}")
         elif self.pending_undo:
             secs_left = max(0, (self.pending_undo_deadline - now) // 1000 + 1)
             key = self._draw_banner(
-                f"Remover último resultado ({self.pending_undo_number})? DEL novamente ({secs_left}s)", RED,
+                surface, f"Remover último resultado ({self.pending_undo_number})? DEL novamente ({secs_left}s)", RED,
                 key="pending_undo",
             )
         elif now < self.flash_until and self.flash_text:
             key = self._draw_banner(
-                self.flash_text, self.flash_color, key=f"flash:{self.flash_text}:{self.flash_until}",
+                surface, self.flash_text, self.flash_color, key=f"flash:{self.flash_text}:{self.flash_until}",
                 font_size=self.flash_font_size,
             )
         else:
@@ -1138,7 +1415,7 @@ class RouletteDisplay:
             if key is not None:
                 self.banner_reveal = Tween(0.0, 1.0, _BANNER_ANIM_MS, ease_out_cubic)
 
-    def _draw_banner(self, text: str, color, key: str, font_size: int = 28) -> str:
+    def _draw_banner(self, surface: pygame.Surface, text: str, color, key: str, font_size: int = 28) -> str:
         theme = self.theme
         reveal = self.banner_reveal.value() if key == self._banner_key else 1.0
         reveal = max(0.0, min(1.0, reveal))
@@ -1147,18 +1424,19 @@ class RouletteDisplay:
         surf = font.render(text, True, TEXT_PRIMARY)
         pad_x, pad_y = theme.px(22), theme.px(11)
         box = pygame.Rect(0, 0, surf.get_width() + pad_x * 2, surf.get_height() + pad_y * 2)
-        base_bottom = theme.height - theme.px(_BOTTOM_BAR_PX) - theme.px(14)
+        _, stats_h, _ = self._layout_bands()
+        base_bottom = theme.height - stats_h - theme.px(14)
         box.midbottom = (theme.width // 2, base_bottom + int((1 - reveal) * theme.px(14)))
 
         shadow_offset = theme.px(5)
         shadow = self._rect_shadow_surface(box.width, box.height, theme.px(8))
         shadow.set_alpha(int(255 * reveal))
-        self.screen.blit(shadow, (box.left + shadow_offset, box.top + shadow_offset))
+        surface.blit(shadow, (box.left + shadow_offset, box.top + shadow_offset))
 
         panel = pygame.Surface(box.size, pygame.SRCALPHA)
         pygame.draw.rect(panel, (*PANEL_BG, 255), panel.get_rect(), border_radius=theme.px(8))
         pygame.draw.rect(panel, (*color, 255), panel.get_rect(), width=2, border_radius=theme.px(8))
         panel.blit(surf, surf.get_rect(center=(box.width // 2, box.height // 2)))
         panel.set_alpha(int(255 * reveal))
-        self.screen.blit(panel, box.topleft)
+        surface.blit(panel, box.topleft)
         return key

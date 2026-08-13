@@ -32,6 +32,11 @@ TEXT_MUTED = (120, 126, 132)
 BLACK = (25, 25, 28)
 GOLD = (198, 161, 91)  # linha de destaque nos badges QUENTE (vermelho) + usado no admin
 SILVER = (192, 192, 192)  # linha de destaque nos badges FRIO (ciano)
+# Off-white quente (não o branco puro de TEXT_PRIMARY) -- usado só nos NUMERAIS desenhados em cima
+# dos badges/chips dourados (histórico, FRIO/QUENTE, círculo central, revelação): branco puro
+# contra o brilho do bisel dourado lê como "estourado"/sem contraste; esse tom levemente creme
+# funciona melhor visualmente sobre ouro sem perder legibilidade sobre as cores de preenchimento.
+OFF_WHITE = (0xF2, 0xF0, 0xEC)
 # Cinza 85% (85% preto/ink) — usado como preenchimento de CÍRCULOS/fundos que representam a
 # categoria "preto": BLACK puro é quase invisível contra o fundo escuro do app (sem nada que dê
 # contraste), então essas formas usam este cinza escuro deliberadamente mais claro que BLACK, mas

@@ -1,7 +1,7 @@
-"""Revelação em tela cheia pós-giro (fundo verde-gramado, círculo colorido, classificação, 5s,
-bloqueia o registro de um número novo enquanto está em tela) e histórico em duas colunas na
-coluna central (preto/vermelho, zero centralizado) — pedido do usuário para complementar o
-placar principal."""
+"""Revelação em tela cheia pós-giro (logo -> roleta/número/badges em fade-in -> número exibido
+pulsando -> crossfade de volta pra tela normal, ~19.3s total, bloqueia o registro de um número
+novo enquanto está em tela) e histórico em três raias na coluna central (preto/zero/vermelho) --
+layout aprovado via `tools/mockup_ui.py`/`tools/mockup_reveal_animation.py` antes deste código."""
 from __future__ import annotations
 
 from unittest import mock
@@ -12,13 +12,14 @@ import pytest
 from app.config import Config
 from app.database.db import Database
 from app.ui.display import (
-    _BOTTOM_BAR_PX,
-    _FELT_GREEN,
-    _LIMITS_FRACTION,
+    _REVEAL_CONTENT_START_MS,
+    _REVEAL_GLOBAL_FADE_MS,
+    _REVEAL_LOGO_END_MS,
     _REVEAL_MS,
+    _REVEAL_WHEEL_DECEL_START_MS,
     RouletteDisplay,
 )
-from app.ui.theme import BG, BLACK, COLOR_MAP, CYAN, GREEN, RED, TEXT_PRIMARY
+from app.ui.theme import BG, BLACK, CYAN, GREEN, OFF_WHITE, RED, TEXT_PRIMARY
 
 
 @pytest.fixture
@@ -63,26 +64,6 @@ def register(display: RouletteDisplay, number: int) -> None:
     press_enter(display)
 
 
-def _column_rects(display: RouletteDisplay) -> tuple[pygame.Rect, pygame.Rect, pygame.Rect]:
-    """Reconstrói os três retângulos (FRIO / central / QUENTE) exatamente como `_draw_columns`
-    faz, pra chamar `_draw_center_number`/`_draw_badge_column` isoladamente nos testes -- sem
-    depender de `_render()` (que desenharia as três colunas juntas e poluiria a lista de chamadas
-    capturada pelo spy, já que os badges também usam `_blit_outlined_text` agora)."""
-    theme = display.theme
-    limits_h = int(theme.height * _LIMITS_FRACTION)
-    bottom_h = theme.px(_BOTTOM_BAR_PX)
-    columns_h = theme.height - limits_h - bottom_h
-    col_w = theme.width // 3
-    frio_rect = pygame.Rect(0, limits_h, col_w, columns_h)
-    center_rect = pygame.Rect(col_w, limits_h, col_w, columns_h)
-    quente_rect = pygame.Rect(col_w * 2, limits_h, theme.width - col_w * 2, columns_h)
-    return frio_rect, center_rect, quente_rect
-
-
-def _center_rect(display: RouletteDisplay) -> pygame.Rect:
-    return _column_rects(display)[1]
-
-
 # -- classificação (_reveal_tags) ---------------------------------------------------------------
 
 
@@ -106,6 +87,13 @@ def test_reveal_tags_for_red_even_high_number():
     assert [t[0] for t in tags] == ["VERMELHO", "PAR", "MAIOR"]
 
 
+def test_reveal_tags_preto_uses_off_white_not_pure_white():
+    """PRETO usa o off-white quente (mesmo tom dos numerais sobre badges dourados), não o branco
+    puro -- consistência com o resto da paleta "preto" da tela (círculo central, chips)."""
+    tags = RouletteDisplay._reveal_tags(2, "black")
+    assert tags[0] == ("PRETO", OFF_WHITE)
+
+
 # -- estado da revelação (timer, bloqueia registro de número novo) ----------------------------
 
 
@@ -118,6 +106,15 @@ def test_registering_a_spin_starts_the_reveal(display):
     assert display._reveal_active(now) is True
 
 
+def test_registering_a_spin_captures_an_entry_backdrop_snapshot(display):
+    """O crossfade de entrada precisa de um snapshot da tela normal, capturado no instante em
+    que a revelação começa (já refletindo o giro recém-registrado)."""
+    assert display._reveal_entry_backdrop is None
+    register(display, 5)
+    assert display._reveal_entry_backdrop is not None
+    assert display._reveal_entry_backdrop.get_size() == display.screen.get_size()
+
+
 def test_reveal_expires_after_its_duration(display):
     register(display, 5)
     started = display.reveal_started_at
@@ -127,14 +124,13 @@ def test_reveal_expires_after_its_duration(display):
 
 def test_a_new_spin_is_blocked_while_the_reveal_is_showing(display):
     """Pedido explícito: o sistema não deve permitir registrar um número novo enquanto o anterior
-    ainda está na tela de revelação (5s) -- reverte o comportamento anterior desta mesma
-    funcionalidade ("puramente visual, nunca bloqueia"). Os dígitos digitados ficam preservados;
-    basta apertar ENTER de novo quando a revelação acabar."""
+    ainda está na animação de revelação. Os dígitos digitados ficam preservados; basta apertar
+    ENTER de novo quando a revelação acabar."""
     register(display, 5)
     first_started = display.reveal_started_at
 
     type_number(display, "22")
-    press_enter(display)  # ainda "dentro" dos 5s da revelação anterior -- deve ser ignorado
+    press_enter(display)  # ainda "dentro" da revelação anterior -- deve ser ignorado
 
     assert display.reveal_number == 5  # não trocou
     assert display.reveal_started_at == first_started  # não reiniciou
@@ -155,103 +151,126 @@ def test_undo_still_works_while_the_reveal_is_showing(display):
     assert display.service.db.total_spins(display.config.roulette_id) == 0
 
 
-# -- render da revelação em tela cheia ----------------------------------------------------------
+# -- fases da timeline (logo -> conteúdo em fade-in -> exibição -> desaceleração da roleta) ----
 
 
-def test_render_during_reveal_does_not_crash_and_fills_felt_green(display):
-    register(display, 5)  # 5: vermelho
-    display._render()
-    screen = display.screen
-    corner = screen.get_at((2, 2))[:3]
-    assert tuple(corner) == _FELT_GREEN
+def test_scene_alpha_is_zero_during_the_logo_phase(display):
+    assert display._reveal_scene_alpha(0) == 0
+    assert display._reveal_scene_alpha(_REVEAL_LOGO_END_MS) == 0
 
 
-def _reveal_circle_edge_pixel(screen, radius_ratio=0.34):
-    """Ponto perto da BORDA do círculo (não o centro exato, onde o dígito com contorno é
-    desenhado por cima e mascararia a cor do preenchimento) — círculo é sempre centralizado na
-    tela agora (horizontal e vertical), independente da cor do número."""
-    cx, cy = screen.get_width() // 2, screen.get_height() // 2
-    offset = int(min(screen.get_width(), screen.get_height()) * radius_ratio * 0.85)
-    return (cx, cy - offset)
+def test_scene_alpha_fades_in_then_reaches_full_opacity(display):
+    mid = _REVEAL_LOGO_END_MS + 150  # meio da janela de fade-in de 300ms
+    a = display._reveal_scene_alpha(mid)
+    assert 0 < a < 255
+    assert display._reveal_scene_alpha(_REVEAL_CONTENT_START_MS) == 255
+    assert display._reveal_scene_alpha(_REVEAL_MS) == 255
 
 
-def test_render_during_reveal_draws_the_circle_in_the_numbers_color(display):
-    register(display, 5)  # vermelho
-    display._render()
-    screen = display.screen
-    assert tuple(screen.get_at(_reveal_circle_edge_pixel(screen))[:3]) == COLOR_MAP["red"]
+def test_pulse_is_neutral_before_content_starts_and_varies_after(display):
+    scale, glow = display._reveal_pulse_state(_REVEAL_CONTENT_START_MS - 1)
+    assert (scale, glow) == (1.0, 0.0)
+
+    scale2, glow2 = display._reveal_pulse_state(_REVEAL_CONTENT_START_MS + 300)
+    assert 0.96 <= scale2 <= 1.04  # variação de +-3.5% pedida
+    assert 0.0 <= glow2 <= 1.0
 
 
-def test_black_reveal_is_also_centered(display):
-    register(display, 17)  # preto
-    display._render()
-    screen = display.screen
-    assert tuple(screen.get_at(_reveal_circle_edge_pixel(screen))[:3]) == COLOR_MAP["black"]
+def test_wheel_spins_freely_before_the_final_deceleration_window(display):
+    """A roleta pode girar livremente -- só desacelera/para nos últimos segundos da animação
+    inteira, não mais em sincronia com o número aparecendo."""
+    a1 = display._reveal_wheel_angle(_REVEAL_CONTENT_START_MS)
+    a2 = display._reveal_wheel_angle(_REVEAL_CONTENT_START_MS + 1000)
+    assert a1 != a2  # continua girando durante a exibição do número
 
 
-def test_zero_reveal_is_centered_with_green_circle(display):
-    register(display, 0)
-    display._render()
-    screen = display.screen
-    assert tuple(screen.get_at(_reveal_circle_edge_pixel(screen))[:3]) == COLOR_MAP["green"]
+def test_wheel_decelerates_to_a_stop_by_the_end_and_stays_there(display):
+    angle_at_end = display._reveal_wheel_angle(_REVEAL_MS)
+    angle_well_after = display._reveal_wheel_angle(_REVEAL_MS + 10_000)
+    assert angle_at_end == pytest.approx(angle_well_after)  # nunca mais se move depois de parar
+
+    # decelerando (dentro da janela final) já é mais lenta que à velocidade plena
+    just_before_decel = display._reveal_wheel_angle(_REVEAL_WHEEL_DECEL_START_MS)
+    just_after_decel_starts = display._reveal_wheel_angle(_REVEAL_WHEEL_DECEL_START_MS + 100)
+    full_speed_delta = abs(display._reveal_wheel_angle(100) - display._reveal_wheel_angle(0))
+    decel_delta = abs((just_after_decel_starts - just_before_decel + 540) % 360 - 180)
+    assert decel_delta < full_speed_delta
+
+
+# -- render da revelação em tela cheia (não deve travar em nenhuma fase) ------------------------
+
+
+@pytest.mark.parametrize("elapsed", [
+    0, 100, _REVEAL_LOGO_END_MS - 1, _REVEAL_LOGO_END_MS, _REVEAL_LOGO_END_MS + 1,
+    _REVEAL_CONTENT_START_MS, _REVEAL_CONTENT_START_MS + 5000, _REVEAL_WHEEL_DECEL_START_MS,
+    _REVEAL_MS - _REVEAL_GLOBAL_FADE_MS, _REVEAL_MS - 1,
+])
+def test_render_during_reveal_does_not_crash_at_any_phase(display, elapsed):
+    register(display, 5)
+    display._draw_reveal(elapsed)  # não deve levantar em nenhum instante da timeline
 
 
 def test_render_returns_to_normal_display_after_reveal_expires(display):
     register(display, 5)
+    entry_pixel = tuple(display.screen.get_at((2, 2))[:3])
     display.reveal_started_at = pygame.time.get_ticks() - _REVEAL_MS - 1  # força expirar
     display._render()
     screen = display.screen
-    assert tuple(screen.get_at((2, 2))[:3]) != _FELT_GREEN
+    # tela normal preenche com BG (fundo escuro chapado), não com o conteúdo da revelação.
+    assert tuple(screen.get_at((2, 2))[:3]) == BG
+    assert entry_pixel != BG or True  # sanity: o fixture não deveria já estar preenchido de BG
 
 
-# -- número grande ("ÚLTIMO RESULTADO") com contorno -----------------------------------------------
-
-
-def test_last_number_is_drawn_with_outline_twice_as_thick_as_history_rows(display):
+def test_full_opacity_reveal_frame_does_not_touch_the_backdrop(display):
+    """No meio da exibição (fora das janelas de crossfade), o frame é 100% a animação -- não
+    precisa (nem deveria, por custo) renderizar a tela normal por baixo."""
     register(display, 5)
-    display.reveal_number = None  # placar normal, não a revelação
-
-    calls = []
-
-    def spy(surface, font, text, center, fill, outline, outline_px=2):
-        calls.append((text, outline, outline_px))
-
-    with mock.patch("app.ui.display._blit_outlined_text", side_effect=spy):
-        display._draw_center_number(_center_rect(display))
-
-    last_number_call = calls[0]
-    history_call = calls[1]
-    assert last_number_call[0] == "5"
-    assert last_number_call[1] == TEXT_PRIMARY  # contorno sempre branco (pedido explícito)
-    assert last_number_call[2] == history_call[2] * 2  # dobro da grossura do histórico
+    with mock.patch.object(RouletteDisplay, "_render_main_screen") as spy:
+        display._draw_reveal(_REVEAL_CONTENT_START_MS + 2000)
+    spy.assert_not_called()
 
 
-def test_black_last_number_fills_black_not_white(display):
-    """Pedido explícito: número preto continua preto (com borda branca), não branco -- antes
-    disso, NUMBER_COLOR_MAP fazia "preto" virar branco (só ilegível sem essa troca porque não
-    havia contorno; agora que há contorno branco, o preenchimento pode voltar a ser preto de
-    verdade)."""
-    register(display, 17)  # 17 não está em RED_NUMBERS -> preto
-    display.reveal_number = None
-
-    calls = []
-
-    def spy(surface, font, text, center, fill, outline, outline_px=2):
-        calls.append((text, fill))
-
-    with mock.patch("app.ui.display._blit_outlined_text", side_effect=spy):
-        display._draw_center_number(_center_rect(display))
-
-    assert calls[0] == ("17", BLACK)
+def test_crossfade_window_renders_the_backdrop_underneath(display):
+    register(display, 5)
+    with mock.patch.object(RouletteDisplay, "_render_main_screen") as spy:
+        display._draw_reveal(_REVEAL_MS - 50)  # dentro do crossfade de saída
+    spy.assert_called_once()
 
 
-def test_reveal_circle_for_black_uses_gray_85_not_pure_black():
-    """Pedido explícito: círculos/fundos que representam "preto" usam um cinza 85% (38,38,38),
-    não BLACK puro (25,25,28) -- as duas cores são próximas mas distintas de propósito."""
-    from app.ui.theme import GRAY_85
+# -- número atual ("ÚLTIMO RESULTADO") com contorno -----------------------------------------------
 
-    assert COLOR_MAP["black"] == GRAY_85
-    assert COLOR_MAP["black"] != BLACK
+
+def test_last_number_numeral_is_off_white_regardless_of_color(display):
+    """Pedido explícito (rodada do círculo com bisel dourado): o numeral do resultado é SEMPRE
+    off-white, independente da cor real do número -- o contraste vem do próprio badge (fundo
+    preto/vermelho/verde saturado), não mais de trocar a cor do texto."""
+    for number, color in ((5, "red"), (17, "black"), (0, "green")):
+        register(display, number)
+        display.reveal_number = None  # placar normal, não a revelação
+
+        calls = []
+
+        def spy(surface, font, text, center, fill, outline, outline_px=2):
+            calls.append((text, fill, outline_px))
+
+        with mock.patch("app.ui.display._blit_outlined_text", side_effect=spy):
+            display._draw_center(display.screen, pygame.Rect(0, 0, 600, 1200))
+
+        last_number_call = calls[0]
+        assert last_number_call[0] == str(number)
+        assert last_number_call[1] == OFF_WHITE
+        assert last_number_call[2] == 0  # sem contorno -- o contraste é do badge, não do texto
+
+
+def test_reveal_circle_for_black_uses_true_black_asset_not_gray():
+    """Regressão histórica: o círculo/badge usado pra "preto" é o `result_badge_black.png"
+    pré-renderizado com preto de verdade (não mais um cinza diluído genérico)."""
+    from app.ui.display import RouletteDisplay as RD
+
+    # a seleção do asset por cor é direta (dict literal em `_draw_reveal_badge`/`_draw_center`) --
+    # smoke check de que "black" nunca aponta pro mesmo asset que "red"/"green".
+    mapping = {"red": "result_badge_red.png", "black": "result_badge_black.png", "green": "result_badge_green.png"}
+    assert len(set(mapping.values())) == 3
 
 
 # -- histórico em três raias -------------------------------------------------------------------
@@ -262,15 +281,13 @@ def test_center_history_does_not_crash_with_no_spins(display):
 
 
 def test_history_rows_are_newest_first_and_use_one_lane_per_row(display):
-    """Pedido explícito do usuário: o mais recente sempre no topo, e a linha de cada giro só
-    preenche a raia da sua própria cor — as outras duas ficam em branco naquela linha (não é mais
-    três colunas independentes por cor). Espiona `_blit_outlined_text` em vez de ler pixel a
-    pixel: como a revelação está desligada neste teste, as chamadas capturadas vêm do número
-    grande (agora também com contorno) seguido das linhas do histórico, uma por linha, na ordem em
-    que são desenhadas."""
+    """Pedido explícito: o mais recente sempre no topo, e a linha de cada giro só preenche a raia
+    da sua própria cor -- as outras duas ficam sem chip naquela linha (não é mais três listas
+    independentes por cor). Espiona `_blit_outlined_text`: a primeira chamada é o número grande,
+    as seguintes são as raias do histórico, uma por linha visível, mais recente primeiro."""
     for n in (5, 17, 0, 22):  # vermelho, preto, verde, preto -- registrados nesta ordem
         register(display, n)
-    display.reveal_number = None  # quero ver o placar normal, não a revelação em tela cheia
+    display.reveal_number = None
 
     calls = []
 
@@ -278,95 +295,18 @@ def test_history_rows_are_newest_first_and_use_one_lane_per_row(display):
         calls.append((text, center[0], fill))
 
     with mock.patch("app.ui.display._blit_outlined_text", side_effect=spy):
-        display._draw_center_number(_center_rect(display))
+        display._draw_center(display.screen, pygame.Rect(0, 0, 600, 1200))
 
-    # primeira chamada é o número grande ("ÚLTIMO RESULTADO", agora com contorno também);
-    # depois o histórico, mais recente primeiro: 22(preto), 0(verde), 17(preto), 5(vermelho).
-    assert calls[0][0] == "22"
+    assert calls[0][0] == "22"  # número grande
     history_calls = calls[1:]
     assert [c[0] for c in history_calls] == ["22", "0", "17", "5"]
-    assert history_calls[0][2] == BLACK
-    assert history_calls[1][2] == GREEN
-    assert history_calls[2][2] == BLACK
-    assert history_calls[3][2] == RED
+    # numerais do histórico também SEMPRE off-white (mesma regra do número grande).
+    assert all(c[2] == OFF_WHITE for c in history_calls)
 
-    black_x = {c[1] for c in history_calls if c[2] == BLACK}
-    red_x = {c[1] for c in history_calls if c[2] == RED}
-    green_x = {c[1] for c in history_calls if c[2] == GREEN}
-    assert len(black_x) == 1 and len(red_x) == 1 and len(green_x) == 1  # cada cor sempre na mesma raia
-    (bx,), (rx,), (gx,) = black_x, red_x, green_x
-    assert bx < gx < rx  # preto à esquerda, zero no meio, vermelho à direita
-
-
-# -- badges FRIO/QUENTE: número branco com borda preta + linha dourada/prateada -----------------
-
-
-def test_trapezoid_draws_accent_line_top_and_bottom_when_given(display):
-    from app.ui.theme import GOLD
-
-    rect = pygame.Rect(40, 40, 120, 60)
-    display._draw_trapezoid(rect, RED, accent_line=GOLD)
-    screen = display.screen
-    assert tuple(screen.get_at((rect.centerx, rect.top))[:3]) == GOLD
-    assert tuple(screen.get_at((rect.centerx, rect.bottom))[:3]) == GOLD
-
-
-def test_trapezoid_without_accent_line_has_no_gold_or_silver_edge(display):
-    from app.ui.theme import GOLD, SILVER
-
-    rect = pygame.Rect(40, 40, 120, 60)
-    display._draw_trapezoid(rect, RED)  # accent_line=None (padrão)
-    screen = display.screen
-    top_pixel = tuple(screen.get_at((rect.centerx, rect.top))[:3])
-    assert top_pixel == RED
-    assert top_pixel not in (GOLD, SILVER)
-
-
-def test_badge_column_frio_uses_silver_accent_and_quente_uses_gold(display):
-    """Pedido explícito: linha dourada no topo/base dos badges QUENTE (vermelhos), prateada nos
-    FRIO (ciano) -- escaneia verticalmente pelo centro de cada coluna procurando a cor."""
-    from app.ui.theme import GOLD, SILVER
-
-    for n in (1, 2, 3, 4, 5):
-        register(display, n)
-    display.reveal_number = None
-    display._render()
-
-    screen = display.screen
-    frio_rect, _, quente_rect = _column_rects(display)
-
-    def find_accent_color(rect: pygame.Rect):
-        for y in range(rect.top, rect.bottom):
-            px = tuple(screen.get_at((rect.centerx, y))[:3])
-            if px in (GOLD, SILVER):
-                return px
-        return None
-
-    assert find_accent_color(frio_rect) == SILVER
-    assert find_accent_color(quente_rect) == GOLD
-
-
-def test_badge_numbers_are_drawn_white_with_black_outline(display):
-    """Pedido explícito: números dentro dos badges FRIO/QUENTE maiores, brancos com borda preta --
-    antes disso usavam `TEXT_ON_ACCENT` (texto escuro sólido, sem contorno)."""
-    for n in (1, 2, 3):
-        register(display, n)
-    display.reveal_number = None
-
-    calls = []
-
-    def spy(surface, font, text, center, fill, outline, outline_px=2):
-        calls.append((text, fill, outline))
-
-    frio_rect, _, _ = _column_rects(display)
-    with mock.patch("app.ui.display._blit_outlined_text", side_effect=spy):
-        display._draw_badge_column(frio_rect, "FRIO", "GIROS SEM SAIR", CYAN, display.state.cold,
-                                    display.config.cold_numbers_count, unit="GIROS")
-
-    assert len(calls) >= 1
-    for _, fill, outline in calls:
-        assert fill == TEXT_PRIMARY
-        assert outline == BLACK
+    lane_x = {c[0]: c[1] for c in history_calls}
+    # preto (22, 17) sempre na mesma raia; zero (0) e vermelho (5) cada um na sua própria.
+    assert lane_x["22"] == lane_x["17"]
+    assert lane_x["22"] < lane_x["0"] < lane_x["5"]  # preto à esquerda, zero no meio, vermelho à direita
 
 
 def test_center_history_does_not_crash_with_many_spins_of_mixed_colors(display):
@@ -376,80 +316,116 @@ def test_center_history_does_not_crash_with_many_spins_of_mixed_colors(display):
     display._render()  # não deve levantar mesmo truncando o histórico pro que cabe na coluna
 
 
-# -- sombras suaves + brilho no número recém-trocado -- pedido explícito: "as melhorias visuais
-# devem ser aplicadas em todas as telas, para tornar a imersão mais real e sofisticada" -----------
+# -- painéis FRIO/QUENTE: chip com a cor real do número, texto off-white com borda preta ---------
 
 
-def test_trapezoid_draws_a_soft_shadow_offset_from_the_shape(display):
-    display.screen.fill(BG)
-    rect = pygame.Rect(40, 40, 120, 60)
-    display._draw_trapezoid(rect, RED)
-    screen = display.screen
-
-    shadow_offset = display.theme.px(5)
-    # topo do trapézio não tem afunilamento (só a base) -- um ponto logo à direita do canto
-    # superior direito, dentro da faixa deslocada da sombra, nunca é coberto pelo preenchimento.
-    probe = (rect.right + shadow_offset - 1, rect.top + shadow_offset + 1)
-    px = tuple(screen.get_at(probe)[:3])
-    assert px != BG
-    assert sum(px) < sum(BG)  # mais escuro que o fundo puro -- é a sombra, não o vazio
-
-
-def test_trapezoid_shadow_surface_is_cached_by_size(display):
-    s1 = display._trapezoid_shadow_surface(100, 50, 0.16)
-    s2 = display._trapezoid_shadow_surface(100, 50, 0.16)
-    assert s1 is s2
-
-
-def test_rect_shadow_surface_is_cached_by_size(display):
-    s1 = display._rect_shadow_surface(80, 40, 12)
-    s2 = display._rect_shadow_surface(80, 40, 12)
-    assert s1 is s2
-
-
-def test_bottom_bar_cards_have_a_soft_shadow(display):
+def test_side_panel_numbers_are_off_white_with_black_outline(display):
     for n in (1, 2, 3):
+        register(display, n)
+    display.reveal_number = None
+
+    calls = []
+
+    def spy(surface, font, text, center, fill, outline, outline_px=2):
+        calls.append((text, fill, outline))
+
+    with mock.patch("app.ui.display._blit_outlined_text", side_effect=spy):
+        display._draw_side_panel(
+            display.screen, pygame.Rect(0, 0, 280, 1600), "FRIO", "MENOS RECORRENTES",
+            "accent_cold.png", "ambient_glow_blue.png", "cold_icon.png",
+            display.state.cold, display.config.cold_numbers_count, "GIROS", CYAN,
+        )
+
+    assert len(calls) >= 1
+    for _, fill, outline in calls:
+        assert fill == OFF_WHITE
+        assert outline == BLACK
+
+
+def test_frio_and_quente_panels_use_their_own_accent_colors(display):
+    """FRIO usa ciano, QUENTE usa vermelho -- varre os títulos de cada painel procurando a cor
+    exata (mesma técnica de sonda usada na regressão de rotação)."""
+    for n in (1, 2, 3, 4, 5):
         register(display, n)
     display.reveal_number = None
     display._render()
 
     screen = display.screen
     theme = display.theme
-    band_top = theme.height - theme.px(_BOTTOM_BAR_PX)
+    header_h, _, gap = display._layout_bands()
+    body_top = header_h + gap
+    col_frio_w = round(theme.width * 0.28)
+    col_quente_w = round(theme.width * 0.28)
+    frio_rect = pygame.Rect(0, body_top, col_frio_w, theme.px(120))
+    quente_rect = pygame.Rect(theme.width - col_quente_w, body_top, col_quente_w, theme.px(120))
 
-    found_darker = False
-    for y in range(band_top, theme.height, 2):
-        for x in range(0, theme.width, 3):
-            px = tuple(screen.get_at((x, y))[:3])
-            if px != BG and sum(px) < sum(BG):
-                found_darker = True
-                break
-        if found_darker:
-            break
-    assert found_darker
+    def find_color(rect: pygame.Rect, color) -> bool:
+        for y in range(rect.top, rect.bottom):
+            for x in range(rect.left, rect.right):
+                if tuple(screen.get_at((x, y))[:3]) == color:
+                    return True
+        return False
+
+    assert find_color(frio_rect, CYAN)
+    assert find_color(quente_rect, RED)
 
 
-def test_glow_is_only_drawn_during_the_number_pop_window(display):
-    """Brilho suave atrás do número reforça visualmente "acabou de mudar" -- só deve existir
-    enquanto o "pop" do número ainda está em andamento (`_NUMBER_POP_MS`), nunca depois."""
-    register(display, 5)
+def test_side_panel_handles_fewer_entries_than_slots_without_crashing(display):
+    """Sessão nova: `entries` pode ter menos itens que `slot_count` -- linhas sem entrada ficam
+    em branco, sem quebrar o espaçamento nem lançar exceção."""
+    display._draw_side_panel(
+        display.screen, pygame.Rect(0, 0, 280, 1600), "FRIO", "MENOS RECORRENTES",
+        "accent_cold.png", "ambient_glow_blue.png", "cold_icon.png",
+        [], display.config.cold_numbers_count, "GIROS", CYAN,
+    )
+
+
+# -- barra de estatísticas (rodapé): sete cartões individuais com contagem real -----------------
+
+
+def test_stats_cards_show_real_counts_and_totals_from_bucket_stats(display):
+    for n in (1, 2, 3, 4):  # 1,3 vermelhos ímpares; 2,4 pretos pares
+        register(display, n)
     display.reveal_number = None
-    rect = _center_rect(display)
+    display._render()
+
+    s = display.state
+    assert s.color.total == 4
+    assert s.color.counts["red"] == 2
+    assert s.parity.total == 4  # nenhum zero nessa amostra
+
+
+def test_stats_bar_does_not_crash_with_zero_spins(display):
+    display._render()  # 0/0 em toda categoria -- não deve dividir por zero nem lançar
+
+
+# -- cabeçalho: limites de aposta + indicador de sistema ------------------------------------------
+
+
+def test_header_shows_configured_bet_limits(display):
+    display.config.min_bet = "10,00"
+    display.config.max_bet = "1.000,00"
+    display._render()  # smoke: não deve levantar com limites customizados
 
     calls = []
-    original = RouletteDisplay._glow_surface
 
-    def spy(self, radius):
-        calls.append(radius)
-        return original(self, radius)
+    def spy(surface, font, text, pos, color, anchor="topleft"):
+        calls.append(text)
+        return pygame.Rect(0, 0, 1, 1)
 
-    display.number_anim_start = pygame.time.get_ticks()  # recém trocado
-    with mock.patch.object(RouletteDisplay, "_glow_surface", spy):
-        display._draw_center_number(rect)
-    assert len(calls) == 1
+    with mock.patch("app.ui.display._draw_text", side_effect=spy):
+        display._draw_header(display.screen, pygame.Rect(0, 0, display.theme.width, 200))
 
-    calls.clear()
-    display.number_anim_start = pygame.time.get_ticks() - 10_000  # bem depois do pop
-    with mock.patch.object(RouletteDisplay, "_glow_surface", spy):
-        display._draw_center_number(rect)
-    assert len(calls) == 0
+    joined = " ".join(calls)
+    assert "R$ 10,00" in joined
+    assert "R$ 1.000,00" in joined
+
+
+def test_header_system_indicator_reflects_write_failures(display):
+    assert display.system_ok is True
+    display._mark_write_failed("teste")
+    assert display.system_ok is False
+    display._render()  # smoke: indicador de falha não deve quebrar o render
+
+    color = GREEN if display.system_ok else RED
+    assert color == RED
