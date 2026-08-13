@@ -43,24 +43,38 @@ def _lerp(a, b, t):
 # -- ícones ---------------------------------------------------------------------------------
 
 def make_snowflake_icon(color, size=64) -> Image.Image:
+    """Floco de neve de 6 pontas com DOIS pares de galhos por braço (não só um V na ponta) e
+    pontas arredondadas -- pedido explícito ("melhore o ícone"), mais próximo de um cristal de
+    gelo de verdade do que a versão anterior (um X de 3 linhas com um único par de traços)."""
     img = _new((size, size))
     d = ImageDraw.Draw(img)
     cx, cy = img.size[0] / 2, img.size[1] / 2
-    r = img.size[0] * 0.42
-    w = max(2, int(img.size[0] * 0.045))
-    for angle_deg in (0, 60, 120):
+    r = img.size[0] * 0.44
+    w = max(2, int(img.size[0] * 0.05))
+    w_branch = max(2, int(w * 0.78))
+    cap = w / 2
+    branch_cap = w_branch / 2
+
+    def dot(pt, radius):
+        d.ellipse([pt[0] - radius, pt[1] - radius, pt[0] + radius, pt[1] + radius], fill=(*color, 255))
+
+    for angle_deg in range(0, 360, 60):
         rad = math.radians(angle_deg)
-        dx, dy = math.cos(rad) * r, math.sin(rad) * r
-        d.line([(cx - dx, cy - dy), (cx + dx, cy + dy)], fill=(*color, 255), width=w)
-        # pequenos traços nas pontas, como cristais de gelo
-        for sign in (-1, 1):
-            tip = (cx + sign * dx, cy + sign * dy)
-            perp = math.radians(angle_deg + 90)
-            tl = r * 0.22
-            p1 = (tip[0] + math.cos(perp) * tl, tip[1] + math.sin(perp) * tl)
-            p2 = (tip[0] - math.cos(perp) * tl, tip[1] - math.sin(perp) * tl)
-            d.line([p1, tip], fill=(*color, 255), width=w)
-            d.line([p2, tip], fill=(*color, 255), width=w)
+        ux, uy = math.cos(rad), math.sin(rad)
+        tip = (cx + ux * r, cy + uy * r)
+        d.line([(cx, cy), tip], fill=(*color, 255), width=w)
+        dot(tip, cap)
+
+        perp = math.radians(angle_deg + 90)
+        pux, puy = math.cos(perp), math.sin(perp)
+        for frac, branch_len in ((0.52, r * 0.26), (0.80, r * 0.20)):
+            bx, by = cx + ux * r * frac, cy + uy * r * frac
+            for sign in (-1, 1):
+                bx2, by2 = bx + sign * pux * branch_len, by + sign * puy * branch_len
+                d.line([(bx, by), (bx2, by2)], fill=(*color, 255), width=w_branch)
+                dot((bx2, by2), branch_cap)
+
+    dot((cx, cy), w * 0.85)
     return _down(img, (size, size))
 
 

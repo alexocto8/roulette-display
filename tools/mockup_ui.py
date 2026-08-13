@@ -131,16 +131,16 @@ def draw_header(screen, theme: Theme, header_h: int) -> None:
     (competia visualmente com os dois cards) e foi pro rodapé do próprio cabeçalho, discreto,
     colado na linha dourada."""
     card_top = theme.px(8)
-    card_w, card_h = theme.px(252), theme.px(148)
-    label_font, value_font = theme.font(30, True), theme.font(58, True)
+    card_w, card_h = theme.px(268), theme.px(158)  # itens de aposta ainda maiores -- pedido explícito
+    label_font, value_font = theme.font(34, True), theme.font(66, True)
 
     left_rect = pygame.Rect(theme.px(20), card_top, card_w, card_h)
     right_rect = pygame.Rect(theme.width - theme.px(20) - card_w, card_top, card_w, card_h)
     for rect, (label, value) in ((left_rect, ("APOSTA MÍN.", "R$ 5,00")),
                                   (right_rect, ("APOSTA MÁX.", "R$ 500,00"))):
         blit_card_bg(screen, rect, theme.px(10))
-        draw_text(screen, label_font, label, (rect.centerx, rect.top + theme.px(16)), TEXT_SECONDARY, anchor="midtop")
-        draw_text(screen, value_font, value, (rect.centerx, rect.top + theme.px(52)), ORANGE, anchor="midtop")
+        draw_text(screen, label_font, label, (rect.centerx, rect.top + theme.px(18)), TEXT_SECONDARY, anchor="midtop")
+        draw_text(screen, value_font, value, (rect.centerx, rect.top + theme.px(58)), ORANGE, anchor="midtop")
 
     dot_c = (theme.width - theme.px(22), header_h - theme.px(16))
     pygame.draw.circle(screen, GREEN, dot_c, theme.px(6))
