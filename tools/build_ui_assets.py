@@ -86,12 +86,12 @@ def make_flame_icon(dark, bright, size=64) -> Image.Image:
 
 # -- círculo do último resultado / chips do histórico ----------------------------------------
 
-def make_result_badge(diameter, fill, ring_tone, accent, shadow_alpha=110) -> Image.Image:
-    """Composição completa: sombra suave -> anel de accent sutil -> anel escuro -> preenchimento
-    com leve gradiente radial -> highlight superior discreto. Usada tanto pro círculo grande do
-    último resultado quanto (num diâmetro menor) pros chips do histórico -- mesma função, só o
-    tamanho muda, pra manter consistência visual entre os dois."""
-    pad = int(diameter * 0.16)
+def make_result_badge(diameter, fill, ring_tone, accent, shadow_alpha=110, gold_halo=False) -> Image.Image:
+    """Composição completa: sombra suave -> halo dourado (opcional, só no círculo grande) -> anel
+    de accent -> anel escuro -> preenchimento com leve gradiente radial -> highlight superior
+    discreto. Usada tanto pro círculo grande do último resultado quanto (num diâmetro menor) pros
+    chips do histórico -- mesma função, só o tamanho/`gold_halo` muda."""
+    pad = int(diameter * (0.30 if gold_halo else 0.16))
     canvas = diameter + pad * 2
     img = Image.new("RGBA", (canvas * SS, canvas * SS), (0, 0, 0, 0))
     cx = cy = canvas * SS / 2
@@ -104,10 +104,23 @@ def make_result_badge(diameter, fill, ring_tone, accent, shadow_alpha=110) -> Im
     shadow = shadow.filter(ImageFilter.GaussianBlur(radius=diameter * 0.05 * SS))
     img.alpha_composite(shadow)
 
-    # 2. anel de accent sutil (levemente maior que o círculo principal)
+    # 1.5 halo dourado suave (só no círculo principal) -- um anel espesso desenhado e depois
+    # borrado bastante, pra criar o "glow" quente ao redor do círculo que a referência usa. Ainda
+    # é só um blur no BUILD, nunca em runtime.
+    if gold_halo:
+        halo = Image.new("RGBA", img.size, (0, 0, 0, 0))
+        halo_r = r + SS * 10
+        ImageDraw.Draw(halo).ellipse([cx - halo_r, cy - halo_r, cx + halo_r, cy + halo_r],
+                                      outline=(*accent, 200), width=int(SS * 7))
+        halo = halo.filter(ImageFilter.GaussianBlur(radius=diameter * 0.045 * SS))
+        img.alpha_composite(halo)
+
+    # 2. anel de accent nítido (levemente maior que o círculo principal)
     ring_r = r + SS * 5
+    ring_alpha = 220 if gold_halo else 130
+    ring_w = max(1, SS * (2 if gold_halo else 1))
     ImageDraw.Draw(img).ellipse([cx - ring_r, cy - ring_r, cx + ring_r, cy + ring_r],
-                                 outline=(*accent, 130), width=max(1, SS))
+                                 outline=(*accent, ring_alpha), width=ring_w)
 
     # 3. anel escuro fino
     ImageDraw.Draw(img).ellipse([cx - r, cy - r, cx + r, cy + r], outline=(*ring_tone, 255), width=SS * 2)
@@ -161,6 +174,44 @@ def make_card_gradient_tile(width, height, top, bottom) -> Image.Image:
     return img
 
 
+def make_background(width, height, base, center_tint) -> Image.Image:
+    """Fundo com profundidade sutil: leve iluminação central + vignette discreto nos cantos.
+    Pré-renderizado 1x -- em runtime custa um único `blit()` no lugar do `screen.fill()` flat que
+    a v5 usava."""
+    small_w, small_h = max(1, width // 4), max(1, height // 4)
+    img = Image.new("RGB", (small_w, small_h), base)
+    cx, cy = small_w / 2, small_h * 0.42  # centro óptico um pouco acima do meio geométrico
+    max_d = math.hypot(cx, cy)
+    px = img.load()
+    for y in range(small_h):
+        for x in range(small_w):
+            d = math.hypot(x - cx, y - cy) / max_d
+            t = min(1.0, d) ** 1.6
+            px[x, y] = _lerp(center_tint, base, t)
+    return img.resize((width, height), Image.LANCZOS)
+
+
+def make_ambient_glow(size, color, alpha=26) -> Image.Image:
+    """Mancha de luz ambiente extremamente sutil (gradiente radial por círculos concêntricos com
+    alfa decrescente -- mesma técnica do preenchimento do `result_badge`, evita o "anel visível"
+    que um único blur insuficiente deixaria), usada atrás da logo e na metade inferior "quieta" dos
+    cards FRIO/QUENTE. Sempre pré-renderizada, um blit só em runtime."""
+    img = Image.new("RGBA", (size * SS, size * SS), (0, 0, 0, 0))
+    cx = cy = size * SS / 2
+    max_r = size * SS * 0.5
+    steps = 48
+    d = ImageDraw.Draw(img)
+    # Desenha do círculo MAIOR (quase transparente) pro MENOR (mais opaco) -- cada círculo
+    # subsequente, menor, é desenhado por cima e cobre o centro do anterior, construindo uma
+    # queda suave sem depender de blur (evita o "anel visível" de um blur insuficiente).
+    for i in range(steps, 0, -1):
+        t = i / steps
+        r = max_r * t
+        a = int(alpha * (1 - t) ** 2.2)
+        d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(*color, a))
+    return _down(img, (size, size))
+
+
 def make_rank_ring(diameter, accent) -> Image.Image:
     """Anel fino do selo de ranking (①②③...) com um leve highlight -- pequeno demais pra
     precisar de sombra própria, mas ainda com antialiasing de verdade via supersampling."""
@@ -193,9 +244,9 @@ def main() -> None:
     make_snowflake_icon(BLUE, size=64).save(OUT_DIR / "cold_icon.png")
     make_flame_icon((150, 20, 10), (255, 150, 40), size=64).save(OUT_DIR / "hot_icon.png")
 
-    make_result_badge(320, fill=RED, ring_tone=(255, 130, 122), accent=GOLD).save(OUT_DIR / "result_badge_red.png")
-    make_result_badge(320, fill=GRAY_85, ring_tone=(110, 112, 118), accent=GOLD).save(OUT_DIR / "result_badge_black.png")
-    make_result_badge(320, fill=GREEN, ring_tone=(90, 235, 160), accent=GOLD).save(OUT_DIR / "result_badge_green.png")
+    make_result_badge(380, fill=RED, ring_tone=(255, 130, 122), accent=GOLD, gold_halo=True).save(OUT_DIR / "result_badge_red.png")
+    make_result_badge(380, fill=GRAY_85, ring_tone=(120, 122, 128), accent=GOLD, gold_halo=True).save(OUT_DIR / "result_badge_black.png")
+    make_result_badge(380, fill=GREEN, ring_tone=(90, 235, 160), accent=GOLD, gold_halo=True).save(OUT_DIR / "result_badge_green.png")
 
     make_result_badge(72, fill=RED, ring_tone=(170, 50, 46), accent=(170, 50, 46), shadow_alpha=70).save(OUT_DIR / "history_chip_red.png")
     make_result_badge(72, fill=GRAY_85, ring_tone=(110, 112, 116), accent=(110, 112, 116), shadow_alpha=70).save(OUT_DIR / "history_chip_black.png")
@@ -213,6 +264,10 @@ def main() -> None:
 
     make_rank_ring(38, BLUE).save(OUT_DIR / "rank_ring_cold.png")
     make_rank_ring(38, RED).save(OUT_DIR / "rank_ring_hot.png")
+
+    make_background(1080, 1920, base=(7, 10, 14), center_tint=(16, 20, 27)).save(OUT_DIR / "background.png")
+    make_ambient_glow(420, BLUE_BRIGHT, alpha=40).save(OUT_DIR / "ambient_glow_blue.png")
+    make_ambient_glow(420, RED_BRIGHT, alpha=40).save(OUT_DIR / "ambient_glow_red.png")
 
     print(f"assets gerados em {OUT_DIR}")
 
