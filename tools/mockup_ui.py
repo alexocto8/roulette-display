@@ -347,7 +347,7 @@ def draw_center_history(screen, theme: Theme, rect: pygame.Rect, history: list[i
                 screen.blit(chip, (x - chip_size // 2, yy - chip_size // 2))
                 blit_outlined(screen, hist_font, str(n), (x, yy), fill=OFF_WHITE, outline=(0, 0, 0), outline_px=1)
             else:
-                pygame.draw.circle(screen, (52, 56, 62), (x, yy), theme.px(3))
+                pygame.draw.circle(screen, (68, 73, 80), (x, yy), theme.px(7))
 
     # legenda discreta no fim da timeline -- eco visual da regra "mais recente no topo", sem
     # nenhum dado novo.
