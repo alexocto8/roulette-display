@@ -16,10 +16,20 @@ vezes, e garante que a rotação (quando configurada) se aplica às três, não 
 """
 from __future__ import annotations
 
+import time
+
 import pygame
 
 from app.config import Config
 from app.ui.theme import Theme
+
+# Quantas vezes tentar abrir o modo de vídeo antes de desistir, e quanto esperar entre
+# tentativas -- o KMSDRM pode falhar de forma passageira logo após um restart do serviço
+# (systemd mata o processo anterior mas o kernel/driver vc4 pode levar uma fração de segundo pra
+# liberar o dispositivo DRM de verdade; tentar de novo imediatamente já resolve a maioria dos
+# casos reais vistos em campo num Pi 3).
+_VIDEO_INIT_ATTEMPTS = 5
+_VIDEO_INIT_RETRY_S = 0.5
 
 _VALID_ROTATIONS = (0, 90, 180, 270)
 
@@ -39,22 +49,14 @@ def create_screen(config: Config, caption: str, dev_size: tuple[int, int] = (650
     quadro final antes de mostrar — nenhuma outra mudança é necessária em quem já chama
     `pygame.display.flip()` (display.py, splash.py, license_screen.py, failsafe_screen.py)."""
     pygame.init()
-    pygame.mouse.set_visible(not config.hide_cursor)
 
     flags = pygame.FULLSCREEN if config.fullscreen else 0
     physical_size = (0, 0) if config.fullscreen else dev_size
-    # vsync=1 é essencial no KMSDRM (Raspberry Pi, sem X11/Wayland): sem sincronizar com o
-    # vblank real do monitor, o loop principal pode pedir o próximo quadro antes do anterior
-    # terminar de verdade, e o driver vc4 responde com "Could not queue pageflip: -22" em loop
-    # -- reproduzido em campo num Pi 3 (a tela de licença, que quase não redesenha, funcionava
-    # normalmente; só o painel principal, redesenhando continuamente, disparava o erro). Nem
-    # todo driver/backend honra `vsync` (ex.: SDL_VIDEODRIVER=dummy nos testes) -- cai pro modo
-    # sem vsync nesse caso em vez de travar o boot inteiro.
-    try:
-        real_screen = pygame.display.set_mode(physical_size, flags, vsync=1)
-    except pygame.error:
-        real_screen = pygame.display.set_mode(physical_size, flags)
+    real_screen = _open_display(physical_size, flags)
     pygame.display.set_caption(caption)
+    # Só depois que o modo de vídeo está de pé de verdade -- setar o mouse antes disso é o que
+    # gerava o "video system not initialized" no Pi 3 quando a 1ª tentativa (com vsync) falhava.
+    pygame.mouse.set_visible(not config.hide_cursor)
 
     rotation = config.screen_rotation if config.screen_rotation in _VALID_ROTATIONS else 0
     if rotation == 0:
@@ -70,6 +72,39 @@ def create_screen(config: Config, caption: str, dev_size: tuple[int, int] = (650
     logical = pygame.Surface(logical_size)
     _install_rotated_flip(real_screen, logical, rotation)
     return logical, Theme(*logical.get_size())
+
+
+def _open_display(physical_size: tuple[int, int], flags: int) -> pygame.Surface:
+    """Abre o modo de vídeo com `vsync=1` (necessário no KMSDRM pra evitar "Could not queue
+    pageflip: -22" em loop -- sem sincronizar com o vblank real, o loop principal pode pedir o
+    próximo quadro antes do anterior terminar de verdade). Duas camadas de tolerância a falha,
+    as duas encontradas em campo num Pi 3:
+
+    1. Se o pedido com `vsync=1` falhar (nem todo driver/backend aceita -- ex.: SDL_VIDEODRIVER=
+       dummy nos testes), tenta de novo sem vsync, mas SÓ depois de desligar e religar o módulo
+       de vídeo -- só chamar `set_mode` de novo em cima da falha anterior deixava o vídeo "meio
+       inicializado" e qualquer chamada seguinte (até `pygame.mouse.set_visible`) estourava
+       "video system not initialized".
+    2. Se AMBAS as tentativas falharem, espera um pouco e tenta a sequência inteira de novo --
+       o KMSDRM pode falhar de forma passageira logo após um `systemctl restart` (o processo
+       anterior às vezes não libera o dispositivo DRM instantaneamente)."""
+    last_error: pygame.error | None = None
+    for attempt in range(_VIDEO_INIT_ATTEMPTS):
+        if attempt > 0:
+            time.sleep(_VIDEO_INIT_RETRY_S)
+            pygame.display.quit()
+            pygame.display.init()
+        try:
+            return pygame.display.set_mode(physical_size, flags, vsync=1)
+        except pygame.error as exc:
+            last_error = exc
+            pygame.display.quit()
+            pygame.display.init()
+            try:
+                return pygame.display.set_mode(physical_size, flags)
+            except pygame.error as exc2:
+                last_error = exc2
+    raise last_error
 
 
 def _install_rotated_flip(real_screen: pygame.Surface, logical: pygame.Surface, rotation: int) -> None:
