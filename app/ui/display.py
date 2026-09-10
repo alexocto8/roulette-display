@@ -138,7 +138,8 @@ _REVEAL_PULSE_PERIOD_MS = 1200
 # girava. Os quadros do GIF (gerados com `Image.rotate(..., expand=False)`, canvas sempre igual)
 # são decodificados uma única vez no primeiro uso (`_wheel_rotation_frames`) e ficam em memória
 # como Surfaces do pygame -- todo frame depois disso é só escolher o quadro mais próximo do
-# ângulo atual e um `smoothscale` até o tamanho final, nunca uma rotação recalculada.
+# ângulo atual e um `scale` (sem filtro -- mais barato que `smoothscale`, ver `_draw_reveal_wheel`)
+# até o tamanho final, nunca uma rotação recalculada.
 _REVEAL_WHEEL_GIF = "roulette_wheel_spin.gif"
 
 # Histórico central: três raias verticais (preto/zero/vermelho) com nós/conectores dourados --
@@ -257,13 +258,23 @@ class RouletteDisplay:
         # Roleta do print de referência do cliente, rotacionada em ângulos discretos (não a cada
         # frame) -- ver `_wheel_rotation_frame` para o motivo (custo de rotacionar uma imagem
         # circular grande em tempo real, todo frame, por ~14s de animação, seria pesado demais
-        # pra um Pi 3; um `smoothscale` por frame a partir de um cache pequeno de ângulos
+        # pra um Pi 3; um `scale` por frame a partir de um cache pequeno de ângulos
         # pré-rotacionados é a mesma técnica "computa uma vez, reusa" do resto do projeto,
-        # aplicada aqui de um jeito que cabe no orçamento de memória do Pi 3).
+        # aplicada aqui de um jeito que cabe no orçamento de memória do Pi 3). `scale` (não
+        # `smoothscale`) de propósito -- o filtro bilinear do smoothscale, redesenhado a cada
+        # frame durante toda a fase de roleta girando (~5s a 30fps), foi o maior gargalo de FPS
+        # medido em campo num Pi 3 real; sem filtro fica um pouco menos suave durante o giro
+        # rápido, imperceptível a olho nu num objeto em movimento contínuo.
         self._wheel_rotation_cache: list[pygame.Surface] | None = None
         # Degradê escuro (70%->0%, esquerda->centro da tela) por cima da roleta -- construído uma
         # única vez (tamanho fixo pra um dado tamanho de tela) e reusado em todo frame da revelação.
         self._reveal_gradient_cache: pygame.Surface | None = None
+        # As duas surfaces auxiliares da revelação (camada RGBA da cena + buffer do crossfade)
+        # também são alocadas uma vez e reusadas todo frame -- criar uma `pygame.Surface` nova a
+        # cada frame (antes: ~150x durante os ~5s de roleta visível) soma alocação+zero-fill de
+        # memória em cima do custo de desenhar, outro gargalo real medido num Pi 3.
+        self._reveal_layer_surface: pygame.Surface | None = None
+        self._reveal_crossfade_surface: pygame.Surface | None = None
 
         self.input_buffer = ""
         self.pending_undo = False
@@ -1208,7 +1219,14 @@ class RouletteDisplay:
         else:
             self._render_main_screen(screen)
 
-        content = pygame.Surface(screen.get_size())
+        # Reusa o mesmo buffer entre frames em vez de alocar uma `pygame.Surface` nova a cada um
+        # (~150x durante os ~5s de crossfade+roleta visível) -- `fill(BG)`, logo na 1ª linha de
+        # `_draw_reveal_content`, já cobre o quadro inteiro de opaco antes de mais nada, então não
+        # precisa de nenhuma limpeza extra aqui.
+        content = self._reveal_crossfade_surface
+        if content is None or content.get_size() != screen.get_size():
+            content = pygame.Surface(screen.get_size())
+            self._reveal_crossfade_surface = content
         self._draw_reveal_content(content, elapsed)
         content.set_alpha(round(255 * blend))
         screen.blit(content, (0, 0))
@@ -1219,7 +1237,17 @@ class RouletteDisplay:
         alpha = self._reveal_scene_alpha(elapsed)
         if alpha > 0:
             pulse_scale, glow_t = self._reveal_pulse_state(elapsed)
-            layer = pygame.Surface((theme.width, theme.height), pygame.SRCALPHA)
+            # Reusa o mesmo buffer RGBA entre frames -- precisa ser limpo (transparente) antes de
+            # cada redesenho, já que roleta/gradiente/badge não cobrem o quadro inteiro (senão
+            # sobraria conteúdo "fantasma" da posição anterior da roleta/badge nas bordas que
+            # mudam de frame pra frame).
+            layer = self._reveal_layer_surface
+            size = (theme.width, theme.height)
+            if layer is None or layer.get_size() != size:
+                layer = pygame.Surface(size, pygame.SRCALPHA)
+                self._reveal_layer_surface = layer
+            else:
+                layer.fill((0, 0, 0, 0))
             self._draw_reveal_wheel(layer, elapsed)
             layer.blit(self._reveal_gradient(), (0, 0))
             self._draw_reveal_badge(layer, pulse_scale, glow_t)
@@ -1282,15 +1310,18 @@ class RouletteDisplay:
 
     def _draw_reveal_wheel(self, surface: pygame.Surface, elapsed: int) -> None:
         """Roleta extraída do print de referência do cliente: 3/5 da altura da tela, 60% cortada
-        pra fora da borda esquerda -- só a fatia direita (40%) fica visível. Um único
-        `smoothscale` por frame a partir do ângulo pré-rotacionado mais próximo (ver
-        `_wheel_rotation_frames`), nunca uma rotação em tempo real na resolução final."""
+        pra fora da borda esquerda -- só a fatia direita (40%) fica visível. Um único `scale` por
+        frame a partir do ângulo pré-rotacionado mais próximo (ver `_wheel_rotation_frames`),
+        nunca uma rotação em tempo real na resolução final. `scale` (rápido, sem filtro) em vez
+        de `smoothscale` (bilinear) de propósito -- esse é o único upscale grande feito TODO
+        frame durante os ~5s de roleta visível, e foi o maior gargalo de FPS medido em campo num
+        Pi 3 real; a perda de suavidade não é perceptível num disco girando continuamente."""
         theme = self.theme
         diameter = round(theme.height * 0.6)
         frames = self._wheel_rotation_frames()
         step_deg = 360 / len(frames)
         idx = round(self._reveal_wheel_angle(elapsed) / step_deg) % len(frames)
-        frame = pygame.transform.smoothscale(frames[idx], (diameter, diameter))
+        frame = pygame.transform.scale(frames[idx], (diameter, diameter))
         cy = theme.height / 2
         cx = -0.10 * diameter
         surface.blit(frame, frame.get_rect(center=(round(cx), round(cy))))

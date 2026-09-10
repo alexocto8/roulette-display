@@ -16,10 +16,16 @@ ExecStart=__INSTALL_DIR__/venv/bin/python3 __INSTALL_DIR__/main.py
 Restart=always
 RestartSec=3
 
-# KMSDRM: renderiza direto no /dev/dri, sem X11/desktop. Se a placa/driver não suportar,
-# troque para SDL_VIDEODRIVER=fbcon (ver README.md "Solução de problemas").
+# KMSDRM: renderiza direto no /dev/dri, sem X11/desktop (ver docs/INSTALACAO_RASPBERRY_PI3.md,
+# seção "Solução de problemas", pra troubleshooting real de driver de vídeo -- não existe
+# "SDL_VIDEODRIVER=fbcon" no SDL2, não tente usar).
 Environment=SDL_VIDEODRIVER=kmsdrm
-Environment=SDL_AUDIODRIVER=dummy
+# ALSA (som real, saída HDMI/P2 conforme `hdmi_drive`/`dtparam=audio=on` no config.txt) -- NUNCA
+# "dummy" aqui: dummy descarta todo áudio silenciosamente, e é exatamente por isso que o beep de
+# confirmação (app/ui/sound.py, toca ao registrar um giro) não tocava em produção (bug real
+# encontrado em campo). "dummy" continua certo só nos testes automatizados (tests/conftest.py
+# define isso via variável de ambiente própria, não lê este arquivo).
+Environment=SDL_AUDIODRIVER=alsa
 Environment=PYTHONUNBUFFERED=1
 
 StandardOutput=journal
