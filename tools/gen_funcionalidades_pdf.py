@@ -61,15 +61,28 @@ def _write_inline(pdf: ManualPDF, text: str, size: int = 10, color=BLACK, line_h
         if part.startswith("**") and part.endswith("**"):
             pdf.set_font("Helvetica", "B", size)
             pdf.set_text_color(*color)
-            pdf.write(line_h, part[2:-2])
+            content = part[2:-2]
         elif part.startswith("`") and part.endswith("`"):
             pdf.set_font("Helvetica", "B", size - 0.5)
             pdf.set_text_color(*NAVY)
-            pdf.write(line_h, part[1:-1])
+            content = part[1:-1]
         else:
             pdf.set_font("Helvetica", "", size)
             pdf.set_text_color(*color)
-            pdf.write(line_h, part)
+            content = part
+        # fpdf2's write() quebra até no meio de uma palavra sem espaço (ex.: uma senha, um
+        # identificador) se ela não couber no resto da linha -- pra um token sem espaço, força
+        # a virada de linha inteira ANTES de escrever, em vez de deixar cortar o texto ao meio.
+        # A margem de 1mm é de propósito: o cálculo de largura do fpdf2 durante o write() real
+        # difere por uma fração de mm do que `get_string_width` reporta aqui (visto na prática:
+        # 14.63mm medidos vs 14.84mm de sobra "cabendo" pelo cálculo, mas ainda assim quebrando
+        # no meio) -- sem essa folga o check passa raspando e não pega o caso real.
+        if " " not in content.strip() and content.strip():
+            remaining = pdf.w - pdf.r_margin - pdf.get_x()
+            if pdf.get_string_width(content) > remaining - 1.0 and pdf.get_x() > pdf.l_margin + 0.1:
+                pdf.ln(line_h)
+                pdf.set_x(pdf.l_margin)
+        pdf.write(line_h, content)
 
 
 _UNICODE_REPLACEMENTS = {

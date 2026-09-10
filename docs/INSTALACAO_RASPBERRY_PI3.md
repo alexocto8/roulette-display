@@ -24,9 +24,16 @@ gráfico (X11/Wayland) e assim o sistema nem tenta subir um.
 2. Nas opções avançadas (ícone de engrenagem), configure:
    - Hostname (ex.: `roleta-mesa01`).
    - Habilitar SSH (com senha, ou sua chave pública).
-   - Usuário e senha.
+   - Usuário e senha — padrão interno da empresa para os equipamentos: usuário `octo`, senha
+     `Octo@26`.
    - Wi-Fi, se for usar (senão, cabo de rede).
 3. Grave no cartão SD, insira no Pi e ligue.
+
+> Esse é o login do **sistema operacional** (SSH/console), separado do PIN de administrador do
+> painel (`admin_pin` em `config.yaml`, seção 5 do manual de operação) — trocar um não afeta o
+> outro. Como é uma senha compartilhada entre vários equipamentos, ela só é apropriada em rede
+> interna/isolada da empresa; se algum equipamento for exposto à internet (SSH acessível de fora),
+> troque a senha desse dispositivo especificamente.
 
 ## 3. Conectar e clonar o projeto
 
