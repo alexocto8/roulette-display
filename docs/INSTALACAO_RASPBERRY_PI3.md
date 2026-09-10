@@ -53,7 +53,14 @@ O script `install.sh`:
 4. Instala e habilita o serviço systemd `roulette-display` (`Restart=always`, reinicia sozinho se
    cair).
 5. Desabilita o login automático do console (`getty@tty1`), para não disputar a tela com o painel.
-6. Ajusta a configuração de boot para não mostrar mensagens de kernel/Linux na tela.
+6. **Desabilita o ambiente gráfico** (`lightdm`/`gdm3`/`sddm`, força boot em `multi-user.target`)
+   — mesmo que a imagem gravada tenha sido a "com Desktop" em vez da Lite recomendada. Sem isso,
+   o gerenciador gráfico sobe sozinho e disputa o `/dev/dri` (KMSDRM) com o painel — sintoma real
+   visto em campo: tela preta ou área de trabalho normal no lugar do painel, e
+   `journalctl -u roulette-display` cheio de `Could not queue pageflip: -22`.
+7. Ajusta o driver de vídeo do Pi 3 (`vc4-fkms-v3d` + `max_framebuffers=3` em `config.txt`) —
+   mais estável nesse hardware que o KMS completo pra um app que redesenha a tela continuamente.
+8. Ajusta a configuração de boot para não mostrar mensagens de kernel/Linux na tela.
 
 Depois do `reboot`, o equipamento deve subir **direto no painel** — sem terminal, sem prompt de
 login, sem desktop.
@@ -79,33 +86,33 @@ O painel não funciona sem uma licença válida para aquele equipamento específ
 ## 6. Orientação da tela (retrato)
 
 O layout principal é **retrato** (mais alto que largo), pensado para uma TV montada em pé ao lado
-da mesa. A interface detecta a orientação sozinha a partir da resolução que o Raspberry realmente
-emite — não precisa configurar nada no app para isso, só garantir que a **saída de vídeo** já
-esteja em retrato antes do painel abrir a tela.
+da mesa (física, virada 90° no suporte — não é sobre um monitor que já é retrato de fábrica).
 
-Como o Pi roda sem X11 em produção (direto via KMSDRM), a rotação é feita na saída de vídeo do
-firmware/kernel, não em software:
+**Método recomendado — rotação por software** (validado em campo num Pi 3, é o que o
+`config.yaml` já traz pronto):
 
-1. Edite `/boot/firmware/cmdline.txt` (é uma linha só — não quebre em várias linhas) e adicione um
-   parâmetro `video=`. Exemplo para uma TV Full HD (1920x1080) montada de lado:
+1. Vire a TV fisicamente pra posição vertical.
+2. Edite `config.yaml` (na raiz do projeto) e ajuste a linha `screen_rotation`:
+   ```yaml
+   screen_rotation: 90
    ```
-   video=HDMI-A-1:1080x1920@60,rotate=90
-   ```
-   Troque `rotate=90` por `rotate=270` se a imagem ficar de cabeça para baixo depois de testar.
-2. Reinicie. O painel detecta a resolução já rotacionada automaticamente — nenhuma configuração
-   adicional é necessária.
-3. Se o monitor/TV aceitar girar a **entrada** sozinho (comum em monitores de sinalização
-   digital), teste sem o parâmetro `video=` primeiro — pode não ser necessário.
+3. Reinicie o serviço: `sudo systemctl restart roulette-display`.
+4. Se o conteúdo aparecer de cabeça para baixo ou de lado errado, troque `90` por `270` no mesmo
+   arquivo e reinicie de novo — qual dos dois bate certo depende só do sentido físico da
+   montagem, não dá pra adivinhar de antemão.
 
-**Se o monitor não suportar nenhuma rotação por hardware/firmware** (situação rara em produção,
-mais comum ao testar em uma VM antes do hardware físico chegar): existe uma rotação por
-**software** de reserva, `screen_rotation` em `config.yaml` (também editável em
-`Personalização/Identificação > Girar tela` no menu admin). Deixe em `0` no Raspberry Pi real —
-use isso só se o passo acima não funcionar.
+Também editável em `Personalização/Identificação > Girar tela` no menu admin
+(`CTRL+ALT+A`), sem precisar de SSH.
+
+> **Alternativa por hardware/firmware** (`video=HDMI-A-1:1080x1920@60,rotate=90` em
+> `/boot/firmware/cmdline.txt`): existe e é suportada pelo KMSDRM em teoria, mas **não foi o
+> caminho usado/validado nas instalações reais até agora** — prefira a rotação por software acima,
+> que já foi testada de ponta a ponta num Pi 3 físico.
 
 ## 7. Conferências finais antes de liberar o equipamento
 
-- [ ] Painel sobe sozinho depois de `sudo reboot`, sem terminal/desktop visível.
+- [ ] Painel sobe sozinho depois de `sudo reboot`, sem terminal/desktop visível
+      (`systemctl get-default` responde `multi-user.target`).
 - [ ] Teclado numérico responde (digite um número de teste e confirme com `ENTER`).
 - [ ] Licença ativa (`CTRL+ALT+A` → PIN → Funções administrativas → Informações da licença).
 - [ ] PIN de administrador trocado do padrão (`1234`).
@@ -116,18 +123,32 @@ use isso só se o passo acima não funcionar.
 
 ## 8. Solução de problemas
 
-- **Tela preta, painel não aparece**: `journalctl -u roulette-display -f`. Se o SDL não conseguir
-  abrir KMSDRM (placa/driver não suportado), edite `systemd/roulette-display.service` trocando
-  `Environment=SDL_VIDEODRIVER=kmsdrm` por `Environment=SDL_VIDEODRIVER=fbcon`, depois:
+- **Tela preta, painel não aparece, ou aparece a área de trabalho normal do sistema em vez do
+  painel**: quase sempre é o ambiente gráfico (`lightdm`/`gdm3`) disputando a tela com o app —
+  confirme com `systemctl get-default`. Se responder `graphical.target` (em vez de
+  `multi-user.target`), o `install.sh` não rodou completo ou a imagem foi regravada depois.
+  Corrija com:
   ```bash
-  sudo systemctl daemon-reload && sudo systemctl restart roulette-display
+  sudo systemctl set-default multi-user.target
+  sudo systemctl disable lightdm && sudo systemctl stop lightdm
+  sudo reboot
   ```
+  Se `journalctl -u roulette-display -f` mostrar `Could not queue pageflip: -22` em loop mesmo
+  sem desktop nenhum rodando, é um problema de driver de vídeo do Pi 3 com KMS — o `install.sh`
+  já ajusta isso automaticamente (`vc4-fkms-v3d` + `max_framebuffers=3` em `config.txt`); confirme
+  que essas linhas estão presentes e, se não, adicione manualmente e reinicie.
+
+  Não use `SDL_VIDEODRIVER=fbcon` — não existe mais no SDL2 (era do SDL 1.2) e faz o app cair
+  ainda mais cedo, com "video system not initialized". O driver certo pra KMSDRM é `kmsdrm`
+  mesmo (padrão do `roulette-display.service`); o app já tenta abrir a tela com `vsync=1` e tem
+  retry automático pra falhas passageiras do driver logo após um restart — não precisa mexer
+  nisso manualmente.
 - **Teclado numérico não responde**: confirme que o usuário do serviço tem acesso a
   `/dev/input/event*` (grupo `input`) — com o serviço rodando como `root` (padrão) isso nunca é
   problema.
-- **Serviço reinicia em loop**: veja `logs/app.log` ou `journalctl -u roulette-display` para o
-  motivo — o `Restart=always` mantém o equipamento operacional mesmo assim, mas o log tem a causa
-  raiz.
+- **Serviço reinicia em loop**: veja `logs/app.log` ou `journalctl -u roulette-display -b -l` (o
+  `-l` evita cortar as linhas do traceback Python) para o motivo — o `Restart=always` mantém o
+  equipamento operacional mesmo assim, mas o log tem a causa raiz.
 - **Serviço demora/reinicia repetidamente logo após o boot**: veja `journalctl -u roulette-display`
   por `sd_notify failed`. Se aparecer, troque `Type=notify` por `Type=simple` e remova
   `WatchdogSec` em `systemd/roulette-display.service` (perde a recuperação automática de

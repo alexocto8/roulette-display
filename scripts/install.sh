@@ -66,6 +66,19 @@ systemctl enable roulette-display.service
 echo "==> Desabilitando login (getty) na tty1 para evitar conflito com o painel..."
 systemctl disable getty@tty1.service 2>/dev/null || true
 
+# Se a imagem instalada foi a "com Desktop" (em vez da "Lite" recomendada), o gerenciador
+# gráfico (lightdm/gdm3/sddm) sobe sozinho no boot e disputa o /dev/dri (KMSDRM) com o painel --
+# sintoma real visto em campo: "Could not queue pageflip: -22" em loop e a tela do painel nunca
+# aparece (às vezes mostra a área de trabalho no lugar). Força o boot pra `multi-user.target`
+# (texto, sem desktop) incondicionalmente -- inofensivo mesmo numa instalação já Lite, onde não
+# existe gerenciador gráfico nenhum pra desabilitar.
+echo "==> Desabilitando ambiente gráfico (desktop) para não disputar a tela com o painel..."
+systemctl set-default multi-user.target
+for dm in lightdm gdm3 gdm sddm; do
+    systemctl disable "${dm}.service" 2>/dev/null || true
+    systemctl stop "${dm}.service" 2>/dev/null || true
+done
+
 echo "==> Configurando boot silencioso (sem mensagens de kernel/desktop)..."
 BOOT_DIR="/boot/firmware"
 [[ -d "${BOOT_DIR}" ]] || BOOT_DIR="/boot"
@@ -90,7 +103,21 @@ if [[ -f "${CONFIG_FILE}" ]]; then
     if ! grep -q "^disable_splash=1" "${CONFIG_FILE}"; then
         echo "disable_splash=1" >> "${CONFIG_FILE}"
     fi
-    echo "    config.txt atualizado (disable_splash=1)."
+    # Driver de vídeo mais estável no Pi 3 (o KMS completo, vc4-kms-v3d, tem histórico de
+    # "Could not queue pageflip: -22" nesse hardware com apps que redesenham continuamente) +
+    # mais um buffer de tela pra folga (default de fábrica é 2). Só troca se a linha já existir
+    # com outro valor -- não adiciona `dtoverlay=vc4-kms-v3d` do zero se o config.txt não tiver
+    # nenhuma linha `dtoverlay=vc4-*`, pra não mexer numa placa/imagem que já veio configurada
+    # diferente de propósito.
+    if grep -q "^dtoverlay=vc4-kms-v3d" "${CONFIG_FILE}"; then
+        sed -i 's/^dtoverlay=vc4-kms-v3d/dtoverlay=vc4-fkms-v3d/' "${CONFIG_FILE}"
+    fi
+    if grep -q "^max_framebuffers=" "${CONFIG_FILE}"; then
+        sed -i 's/^max_framebuffers=.*/max_framebuffers=3/' "${CONFIG_FILE}"
+    elif grep -q "^dtoverlay=vc4-fkms-v3d" "${CONFIG_FILE}"; then
+        sed -i '/^dtoverlay=vc4-fkms-v3d/a max_framebuffers=3' "${CONFIG_FILE}"
+    fi
+    echo "    config.txt atualizado (disable_splash=1, vc4-fkms-v3d, max_framebuffers=3)."
 else
     echo "    AVISO: ${CONFIG_FILE} não encontrado, pulei essa etapa (ajuste manualmente)."
 fi
