@@ -43,7 +43,17 @@ def create_screen(config: Config, caption: str, dev_size: tuple[int, int] = (650
 
     flags = pygame.FULLSCREEN if config.fullscreen else 0
     physical_size = (0, 0) if config.fullscreen else dev_size
-    real_screen = pygame.display.set_mode(physical_size, flags)
+    # vsync=1 é essencial no KMSDRM (Raspberry Pi, sem X11/Wayland): sem sincronizar com o
+    # vblank real do monitor, o loop principal pode pedir o próximo quadro antes do anterior
+    # terminar de verdade, e o driver vc4 responde com "Could not queue pageflip: -22" em loop
+    # -- reproduzido em campo num Pi 3 (a tela de licença, que quase não redesenha, funcionava
+    # normalmente; só o painel principal, redesenhando continuamente, disparava o erro). Nem
+    # todo driver/backend honra `vsync` (ex.: SDL_VIDEODRIVER=dummy nos testes) -- cai pro modo
+    # sem vsync nesse caso em vez de travar o boot inteiro.
+    try:
+        real_screen = pygame.display.set_mode(physical_size, flags, vsync=1)
+    except pygame.error:
+        real_screen = pygame.display.set_mode(physical_size, flags)
     pygame.display.set_caption(caption)
 
     rotation = config.screen_rotation if config.screen_rotation in _VALID_ROTATIONS else 0
