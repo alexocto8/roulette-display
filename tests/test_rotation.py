@@ -92,8 +92,8 @@ def test_create_screen_twice_in_the_same_process_does_not_double_rotate():
     assert tuple(second_pixel) == RED  # mesmo resultado -- não girou de novo em cima do já girado
 
 
-def test_screen_rotation_config_field_defaults_to_zero_for_existing_installs():
-    assert Config().screen_rotation == 0
+def test_screen_rotation_config_field_defaults_to_90_for_new_installs():
+    assert Config().screen_rotation == 90
 
 
 def test_hot_cold_panels_survive_rotation(tmp_path):

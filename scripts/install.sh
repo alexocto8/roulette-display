@@ -99,13 +99,17 @@ CONFIG_FILE="${BOOT_DIR}/config.txt"
 if [[ -f "${CMDLINE_FILE}" ]]; then
     cp "${CMDLINE_FILE}" "${CMDLINE_FILE}.bak.$(date +%Y%m%d%H%M%S)"
     LINE="$(cat "${CMDLINE_FILE}")"
-    for arg in quiet loglevel=3 logo.nologo vt.global_cursor_default=0 consoleblank=0; do
+    # "splash" (presente por padrão na imagem oficial) é o que liga a animação de boot do
+    # Plymouth (a logo/tela de carregamento do Raspberry Pi OS) -- remove como palavra inteira
+    # (não como substring) pra não mexer em outro parâmetro que por acaso contenha essas letras.
+    LINE="$(echo " ${LINE} " | sed -E 's/[[:space:]]splash[[:space:]]/ /g')"
+    for arg in quiet loglevel=3 logo.nologo vt.global_cursor_default=0 consoleblank=0 plymouth.enable=0; do
         if [[ "${LINE}" != *"${arg}"* ]]; then
             LINE="${LINE} ${arg}"
         fi
     done
-    echo "${LINE}" | sed 's/^ *//' > "${CMDLINE_FILE}"
-    echo "    cmdline.txt atualizado (backup salvo ao lado)."
+    echo "${LINE}" | sed -E 's/[[:space:]]+/ /g; s/^ *//; s/ *$//' > "${CMDLINE_FILE}"
+    echo "    cmdline.txt atualizado (boot silencioso, sem logo do Plymouth; backup salvo ao lado)."
 else
     echo "    AVISO: ${CMDLINE_FILE} não encontrado, pulei essa etapa (ajuste manualmente)."
 fi

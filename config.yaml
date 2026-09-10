@@ -17,9 +17,11 @@ target_fps: 30
 idle_fps: 8
 hide_cursor: true
 # Rotação por software do conteúdo, pra quando a TV é montada em pé (retrato) mas o driver de
-# vídeo não gira sozinho. Valores: 0 (nenhuma), 90, 180, 270. Teste 90 e 270 depois de virar a
-# TV fisicamente -- qual bate certo depende do sentido da montagem, não dá pra adivinhar.
-screen_rotation: 0
+# vídeo não gira sozinho. Valores: 0 (nenhuma), 90, 180, 270. Padrão de fábrica: 90 (retrato --
+# o layout principal é pensado pra TV montada em pé). Se a tela aparecer de cabeça para baixo
+# ou de lado errado nessa instalação, troque para 270 -- depende só do sentido físico da
+# montagem, não dá pra adivinhar de antemão.
+screen_rotation: 90
 
 admin_pin: "1234"
 undo_confirm_seconds: 4.0

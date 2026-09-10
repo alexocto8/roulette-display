@@ -88,18 +88,18 @@ O painel não funciona sem uma licença válida para aquele equipamento específ
 O layout principal é **retrato** (mais alto que largo), pensado para uma TV montada em pé ao lado
 da mesa (física, virada 90° no suporte — não é sobre um monitor que já é retrato de fábrica).
 
-**Método recomendado — rotação por software** (validado em campo num Pi 3, é o que o
-`config.yaml` já traz pronto):
+**Método recomendado — rotação por software** (validado em campo num Pi 3). `config.yaml` já vem
+de fábrica com `screen_rotation: 90`, então numa instalação nova normalmente **não precisa mexer
+em nada** — só:
 
 1. Vire a TV fisicamente pra posição vertical.
-2. Edite `config.yaml` (na raiz do projeto) e ajuste a linha `screen_rotation`:
+2. Reinicie o serviço, se ele já estava rodando: `sudo systemctl restart roulette-display`.
+3. Se o conteúdo aparecer de cabeça para baixo ou de lado errado (depende do sentido físico da
+   montagem, não dá pra adivinhar de antemão), edite `config.yaml` e troque `90` por `270`:
    ```yaml
-   screen_rotation: 90
+   screen_rotation: 270
    ```
-3. Reinicie o serviço: `sudo systemctl restart roulette-display`.
-4. Se o conteúdo aparecer de cabeça para baixo ou de lado errado, troque `90` por `270` no mesmo
-   arquivo e reinicie de novo — qual dos dois bate certo depende só do sentido físico da
-   montagem, não dá pra adivinhar de antemão.
+   e reinicie de novo.
 
 Também editável em `Personalização/Identificação > Girar tela` no menu admin
 (`CTRL+ALT+A`), sem precisar de SSH.

@@ -39,12 +39,14 @@ class Config:
     target_fps: int = 30
     idle_fps: int = 8  # frame rate when nothing is animating, keeps CPU usage low on RPi3
     hide_cursor: bool = True
-    # Rotação de tela em SOFTWARE (0/90/180/270) — só necessária quando o monitor físico é
-    # paisagem, será montado de lado (retrato), e o driver de vídeo não faz a rotação sozinho (ex.:
-    # console de VM sem suporte real a `xrandr --rotate`). No Raspberry Pi em produção (KMSDRM), a
-    # rotação já é feita pelo kernel via `video=...,rotate=` no cmdline.txt — deixe 0 nesse caso
-    # (ver README, seção "Orientação retrato", e app/ui/rotation.py).
-    screen_rotation: int = 0
+    # Rotação de tela em SOFTWARE (0/90/180/270) — pra quando o monitor físico é paisagem mas
+    # será montado de lado (retrato) e o driver de vídeo não gira sozinho. Padrão de fábrica: 90
+    # (retrato) -- o layout principal do painel é pensado pra TV montada em pé; instalações com
+    # orientação diferente ajustam depois (config.yaml ou menu admin). Esse é o método
+    # validado em campo num Pi 3 real (KMSDRM) -- a alternativa via `video=...,rotate=` no
+    # cmdline.txt nunca foi usada/testada na prática (ver README, seção "Orientação retrato", e
+    # app/ui/rotation.py).
+    screen_rotation: int = 90
 
     admin_pin: str = "1234"
     undo_confirm_seconds: float = 4.0

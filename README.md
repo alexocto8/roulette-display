@@ -337,44 +337,13 @@ detecta a orientação sozinha (`Theme.portrait = altura > largura`) e escolhe o
 preciso configurar nada no `config.yaml` para isso, só a **resolução que o Raspberry realmente
 emite** precisa estar em retrato.
 
-Como não há X11 em produção (rodamos direto em KMSDRM), não existe `xrandr --rotate` — a rotação
-tem que ser feita na saída de vídeo do próprio firmware/kernel, antes do pygame sequer abrir a
-tela:
+Como não há X11 em produção (rodamos direto em KMSDRM), não existe `xrandr --rotate`. O método
+**validado em campo, de ponta a ponta, num Pi 3 real** é a rotação por software abaixo — é o que
+`install.sh`/`config.yaml` já trazem prontos, com padrão de fábrica `screen_rotation: 90`.
 
-- **`/boot/firmware/cmdline.txt`** (mesma linha do boot silencioso da seção anterior), adicione um
-  parâmetro `video=` girando a saída HDMI. Para uma TV Full HD física (1920x1080) montada de lado,
-  girando para ficar em pé:
-  ```
-  video=HDMI-A-1:1080x1920@60,rotate=90
-  ```
-  Troque `HDMI-A-1` pela porta usada (`HDMI-A-2` na segunda saída de um Pi 4/CM4; no Pi 3 normalmente
-  só existe `HDMI-A-1`) e `rotate=90`/`rotate=270` pelo sentido do giro físico da TV.
-- Depois de reiniciar, `pygame.display.set_mode((0, 0), pygame.FULLSCREEN)` (o que o app já faz)
-  detecta a resolução atual do KMS — já rotacionada — automaticamente. Nenhuma mudança de código é
-  necessária.
-- Se a TV/monitor aceitar **entrada nativa em retrato** (alguns monitores de sinalização digital
-  giram o próprio painel via OSD sem precisar que a placa de vídeo gire nada), o `video=` acima
-  pode não ser necessário — teste sem ele primeiro.
-- Não fiz o `install.sh` aplicar esse parâmetro automaticamente: o nome da porta HDMI e o sentido
-  do giro dependem do hardware exato (modelo do Pi, TV, como ela foi fisicamente montada), e um
-  parâmetro `video=` errado pode deixar a saída de vídeo em branco no boot — prefiro que isso seja
-  um passo manual e testado, em vez de um valor adivinhado sendo aplicado automaticamente num
-  campo em produção.
+#### Rotação em software (`screen_rotation`) — método de produção
 
-O layout paisagem (mais largo que alto) continua funcionando — é o que aparece automaticamente ao
-rodar `python3 main.py` numa janela normal (`fullscreen: false`) durante o desenvolvimento, ou se
-o equipamento acabar instalado numa TV horizontal comum.
-
-#### Rotação em software (`screen_rotation`) — quando o driver de vídeo não gira sozinho
-
-O caminho acima (`video=...,rotate=`) depende do kernel/firmware girar a saída antes do pygame
-abrir a tela — funciona no Raspberry Pi real (KMSDRM), mas alguns ambientes não suportam nenhuma
-forma de rotação por hardware/driver: o console de várias VMs (VMware/ESXi, algumas soluções de
-VNC) expõe uma tela virtual cujo RandR não implementa rotação de verdade (`xrandr --rotate` falha
-com `BadMatch`/`RRSetScreenSize` nesses casos) — situação comum ao testar o app numa VM com monitor
-paisagem que será montada em pé.
-
-Para esses casos, `config.screen_rotation` (`0`/`90`/`180`/`270`, padrão `0`) gira o quadro em
+`config.screen_rotation` (`0`/`90`/`180`/`270`, padrão de fábrica `90` — retrato) gira o quadro em
 software, em `app/ui/rotation.py`: o app desenha normalmente numa superfície "lógica" já com as
 dimensões trocadas (retrato), e `pygame.display.flip()` gira esse quadro pra caber na tela física
 (paisagem) antes de mostrar — nenhuma outra parte do código precisa saber disso. Editável também
