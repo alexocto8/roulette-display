@@ -22,11 +22,13 @@ A tela é dividida em cinco áreas, de cima para baixo:
 4. **Indicador "● SISTEMA OK"** discreto no canto: fica verde só quando o banco de dados está
    respondendo normalmente. Se ficar vermelho/laranja por muito tempo, é sinal de problema —
    contate o suporte técnico.
-5. **Animação de revelação**: toda vez que um resultado é confirmado, a tela inteira mostra por 5
-   segundos um círculo grande na cor do número (verde para zero, vermelho/preto para os demais),
-   com a classificação completa (VERMELHO/PRETO/ZERO, ÍMPAR/PAR, MENOR/MAIOR) e um beep curto.
+5. **Animação de revelação**: toda vez que um resultado é confirmado, um beep curto toca e a tela
+   inteira mostra, em sequência: a logo do cassino por ~1,5s, depois a roleta girando com o
+   número em destaque (círculo grande na cor do resultado — verde para zero, vermelho/preto para
+   os demais) e a classificação completa (VERMELHO/PRETO/ZERO, ÍMPAR/PAR, MENOR/MAIOR), parada e
+   exibida por 5s antes de voltar pra tela principal — cerca de 7 segundos no total.
    **Enquanto ela está na tela, o sistema não registra um número novo**: pode digitar à vontade,
-   mas o `ENTER` só confirma depois que os 5s acabarem — os dígitos digitados não se perdem,
+   mas o `ENTER` só confirma depois que a animação acabar — os dígitos digitados não se perdem,
    basta apertar `ENTER` de novo. Desfazer o último resultado (`DEL DEL` ou `-` `ENTER`) continua
    funcionando normalmente durante a revelação.
 
@@ -44,9 +46,9 @@ preveem o próximo resultado.
 | `+` | Marca "novo giro" na tela (aviso piscando, só visual — some sozinho) |
 
 **Fluxo normal**: operador vê a bolinha cair no número X → digita `X` → `ENTER` → tela confirma
-("REGISTRADO • X") e a animação de revelação aparece por 5s. **O próximo número só é registrado
-depois que a animação terminar** — pode digitar antes, mas o `ENTER` de confirmação só tem efeito
-quando os 5s acabarem.
+("REGISTRADO • X") e a animação de revelação aparece por ~7s (logo + roleta/número). **O próximo
+número só é registrado depois que a animação terminar** — pode digitar antes, mas o `ENTER` de
+confirmação só tem efeito quando ela acabar.
 
 ### Corrigindo um erro de digitação
 
