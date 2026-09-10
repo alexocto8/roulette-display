@@ -149,6 +149,64 @@ def _bullet(pdf: ManualPDF, text: str, indent: float = 5) -> None:
     pdf.ln(6.2)
 
 
+def _checkbox(pdf: ManualPDF, text: str, indent: float = 5) -> None:
+    """Item de checklist ("- [ ] texto"). Desenha o quadrado como vetor (pdf.rect), não como
+    caractere Unicode (☐/U+2610 não existe na fonte core Helvetica/latin-1 do fpdf2 -- viraria
+    "?" pelo fallback de _sanitize)."""
+    x0 = MARGIN_MM + indent
+    y0 = pdf.get_y()
+    box = 3.6
+    pdf.set_draw_color(*GOLD)
+    pdf.set_line_width(0.4)
+    pdf.rect(x0, y0 + 1.3, box, box)
+    pdf.set_x(x0 + box + 3)
+    _write_inline(pdf, text)
+    pdf.ln(6.2)
+
+
+def _code_block(pdf: ManualPDF, lines: list[str]) -> None:
+    """Bloco de código (\`\`\`...\`\`\`), ex. comandos de terminal -- monoespaçado, com fundo
+    cinza-claro pra destacar do texto corrido. Courier aqui é seguro (não é uma sequência de
+    write() alternando família no meio da linha, que é o que aciona o bug do fpdf2 documentado
+    em _write_inline; é uma única chamada multi_cell isolada, igual às células de tabela)."""
+    if pdf.get_y() > 255:
+        pdf.add_page()
+    pdf.ln(2)
+    text = "\n".join(_sanitize(line) for line in lines)
+    pdf.set_font("Courier", "", 9)
+    pdf.set_text_color(*NAVY)
+    pdf.set_fill_color(245, 246, 248)
+    pdf.set_x(MARGIN_MM)
+    pdf.multi_cell(CONTENT_W_MM, 5.2, text, fill=True, align="L",
+                    new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+    pdf.ln(3)
+
+
+def _note(pdf: ManualPDF, lines: list[str]) -> None:
+    """Callout ("> texto" no markdown) -- barra vertical dourada à esquerda + texto em cinza,
+    indentado. Sem isso o "> " ficava vazando literal no meio do parágrafo corrido."""
+    if pdf.get_y() > 250:
+        pdf.add_page()
+    pdf.ln(2)
+    y0 = pdf.get_y()
+    pdf.set_x(MARGIN_MM + 5)
+    _write_inline(pdf, " ".join(lines), size=9.5, color=GRAY, line_h=5.4)
+    pdf.ln(2)
+    y1 = pdf.get_y()
+    pdf.set_draw_color(*GOLD)
+    pdf.set_line_width(0.8)
+    pdf.line(MARGIN_MM, y0, MARGIN_MM, y1 - 2)
+    pdf.ln(2)
+
+
+def _bullet_continuation(pdf: ManualPDF, text: str, indent: float = 5) -> None:
+    """Continuação de um item de lista já iniciado (sem repetir o marcador "-"), usada quando o
+    item tem um bloco de código no meio e mais texto depois."""
+    pdf.set_x(MARGIN_MM + indent + 5)
+    _write_inline(pdf, text)
+    pdf.ln(6.2)
+
+
 def _numbered(pdf: ManualPDF, n: int, text: str) -> None:
     x0 = MARGIN_MM
     pdf.set_x(x0)
@@ -194,9 +252,13 @@ def _table(pdf: ManualPDF, header: list[str], rows: list[list[str]]) -> None:
     pdf.ln(3)
 
 
-def parse_and_render(md_path: Path, out_path: Path) -> None:
+def parse_and_render(
+    md_path: Path,
+    out_path: Path,
+    footer_text: str = "OCTO Tecnologia - Manual de Operacao do Painel de Roleta",
+) -> None:
     lines = md_path.read_text(encoding="utf-8").splitlines()
-    pdf = ManualPDF(footer_text="OCTO Tecnologia - Manual de Operacao do Painel de Roleta")
+    pdf = ManualPDF(footer_text=footer_text)
     pdf.add_page()
 
     i = 0
@@ -228,6 +290,24 @@ def parse_and_render(md_path: Path, out_path: Path) -> None:
             _h3(pdf, stripped[4:])
             i += 1
             continue
+        if stripped.startswith(">"):
+            flush_para()
+            quote_lines = []
+            while i < n and lines[i].strip().startswith(">"):
+                quote_lines.append(lines[i].strip().lstrip(">").strip())
+                i += 1
+            _note(pdf, quote_lines)
+            continue
+        if stripped.startswith("```"):
+            flush_para()
+            i += 1
+            code_lines: list[str] = []
+            while i < n and not lines[i].strip().startswith("```"):
+                code_lines.append(lines[i])
+                i += 1
+            i += 1  # pula a cerca de fechamento
+            _code_block(pdf, code_lines)
+            continue
         if stripped.startswith("|"):
             flush_para()
             # markdown table: header row, separator row, data rows
@@ -249,8 +329,44 @@ def parse_and_render(md_path: Path, out_path: Path) -> None:
         if stripped.startswith("- "):
             flush_para()
             indent = 5 if not line.startswith("   ") else 11
-            _bullet(pdf, stripped[2:], indent=indent)
+            text_first = stripped[2:]
+            if text_first.startswith("[ ] "):
+                _checkbox(pdf, text_first[4:], indent=indent)
+                i += 1
+                continue
+            # item de lista que pode continuar em linhas seguintes indentadas com 2 espaços
+            # (parágrafo longo quebrado em várias linhas no markdown, às vezes com um bloco de
+            # código `\`\`\`` no meio) -- sem isso a continuação vazava como parágrafo solto,
+            # desconectado do item, com marcadores de markdown quebrados no meio da frase.
+            item_lines = [text_first]
             i += 1
+            first_chunk = True
+            while (
+                i < n
+                and lines[i].strip() != ""
+                and lines[i].startswith("  ")
+                and not lines[i].strip().startswith("- ")
+            ):
+                cont = lines[i].strip()
+                if cont.startswith("```"):
+                    if item_lines:
+                        (_bullet if first_chunk else _bullet_continuation)(
+                            pdf, " ".join(item_lines), indent=indent)
+                        first_chunk = False
+                        item_lines = []
+                    i += 1
+                    code_lines = []
+                    while i < n and not lines[i].strip().startswith("```"):
+                        code_lines.append(lines[i].strip())
+                        i += 1
+                    i += 1  # pula a cerca de fechamento
+                    _code_block(pdf, code_lines)
+                    continue
+                item_lines.append(cont)
+                i += 1
+            if item_lines:
+                (_bullet if first_chunk else _bullet_continuation)(
+                    pdf, " ".join(item_lines), indent=indent)
             continue
         if stripped.startswith("*") and stripped.endswith("*") and not stripped.startswith("**"):
             flush_para()
@@ -276,4 +392,7 @@ def parse_and_render(md_path: Path, out_path: Path) -> None:
 if __name__ == "__main__":
     md_path = Path(sys.argv[1])
     out_path = Path(sys.argv[2])
-    parse_and_render(md_path, out_path)
+    if len(sys.argv) > 3:
+        parse_and_render(md_path, out_path, footer_text=sys.argv[3])
+    else:
+        parse_and_render(md_path, out_path)
