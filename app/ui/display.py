@@ -28,6 +28,7 @@ from __future__ import annotations
 import logging
 import math
 import time
+from collections import OrderedDict
 
 import pygame
 from PIL import Image as PILImage
@@ -141,6 +142,13 @@ _REVEAL_PULSE_PERIOD_MS = 1200
 # ângulo atual e um `scale` (sem filtro -- mais barato que `smoothscale`, ver `_draw_reveal_wheel`)
 # até o tamanho final, nunca uma rotação recalculada.
 _REVEAL_WHEEL_GIF = "roulette_wheel_spin.gif"
+
+# Cache LRU dos quadros da roleta já escalados pro diâmetro final (ver `_draw_reveal_wheel`) --
+# limitado, não os 48 ângulos inteiros: a ~1150px de diâmetro (retrato Full HD) isso passaria de
+# 240MB, memória alta demais pra um Pi 3 com 1GB de RAM no total. 16 quadros cabem com folga
+# (~85MB no pior caso) e ainda cobrem bem os ~2s finais de desaceleração, quando o ângulo quase
+# não muda de frame a frame e o mesmo punhado de quadros se repete várias vezes seguidas.
+_WHEEL_SCALED_CACHE_MAX = 16
 
 # Histórico central: três raias verticais (preto/zero/vermelho) com nós/conectores dourados --
 # tons diferentes do GOLD "cheio" usado em bordas/linhas de accent (mais claro/mais escuro,
@@ -266,6 +274,12 @@ class RouletteDisplay:
         # medido em campo num Pi 3 real; sem filtro fica um pouco menos suave durante o giro
         # rápido, imperceptível a olho nu num objeto em movimento contínuo.
         self._wheel_rotation_cache: list[pygame.Surface] | None = None
+        # Cache LRU (ver `_WHEEL_SCALED_CACHE_MAX`) dos quadros já escalados pro diâmetro final --
+        # `OrderedDict` bastando pro padrão de acesso (mover-pro-fim ao reusar, descartar do
+        # início quando cheio), sem precisar de `functools.lru_cache` (que não serve bem aqui:
+        # a chave inclui o diâmetro, que só muda se a janela for redimensionada em tempo de
+        # execução, e um cache por instância -- não por função -- é o que faz sentido).
+        self._wheel_scaled_cache: OrderedDict[tuple[int, int], pygame.Surface] = OrderedDict()
         # Degradê escuro (70%->0%, esquerda->centro da tela) por cima da roleta -- construído uma
         # única vez (tamanho fixo pra um dado tamanho de tela) e reusado em todo frame da revelação.
         self._reveal_gradient_cache: pygame.Surface | None = None
@@ -1255,10 +1269,24 @@ class RouletteDisplay:
         theme = self.theme
         surface.fill(BG)  # mesmo fundo da tela normal, sem trocar de cor/tema -- pedido explícito
         alpha = self._reveal_scene_alpha(elapsed)
-        if alpha > 0:
+        if alpha >= 255:
+            # Caminho direto (sem camada intermediária): depois do fade-in de entrada
+            # (`_REVEAL_CONTENT_FADE_MS`, ~300ms/~9 frames), a cena fica em opacidade total pelo
+            # resto da revelação inteira (~5s/~150 frames) -- desenhar roleta/gradiente/badge
+            # direto em `surface` (que `fill(BG)` já deixou opaca) evita alocar e compor uma
+            # camada SRCALPHA extra do tamanho da tela TODO frame só pra aplicar um alpha de
+            # 255 nela (que não muda nada visualmente, só custa CPU) -- gargalo real de FPS
+            # encontrado num Pi 3.
             pulse_scale, glow_t = self._reveal_pulse_state(elapsed)
-            # Reusa o mesmo buffer RGBA entre frames -- precisa ser limpo (transparente) antes de
-            # cada redesenho, já que roleta/gradiente/badge não cobrem o quadro inteiro (senão
+            self._draw_reveal_wheel(surface, elapsed)
+            surface.blit(self._reveal_gradient(), (0, 0))
+            self._draw_reveal_badge(surface, pulse_scale, glow_t)
+        elif alpha > 0:
+            pulse_scale, glow_t = self._reveal_pulse_state(elapsed)
+            # Só durante o fade-in de entrada -- aqui sim precisa de uma camada à parte, pra
+            # aplicar UM alpha só no conjunto (roleta+gradiente+badge) inteiro de uma vez. Reusa
+            # o mesmo buffer entre frames; precisa ser limpo (transparente) antes de cada
+            # redesenho, já que roleta/gradiente/badge não cobrem o quadro inteiro (senão
             # sobraria conteúdo "fantasma" da posição anterior da roleta/badge nas bordas que
             # mudam de frame pra frame).
             layer = self._reveal_layer_surface
@@ -1330,21 +1358,37 @@ class RouletteDisplay:
 
     def _draw_reveal_wheel(self, surface: pygame.Surface, elapsed: int) -> None:
         """Roleta extraída do print de referência do cliente: 3/5 da altura da tela, 60% cortada
-        pra fora da borda esquerda -- só a fatia direita (40%) fica visível. Um único `scale` por
-        frame a partir do ângulo pré-rotacionado mais próximo (ver `_wheel_rotation_frames`),
-        nunca uma rotação em tempo real na resolução final. `scale` (rápido, sem filtro) em vez
-        de `smoothscale` (bilinear) de propósito -- esse é o único upscale grande feito TODO
-        frame durante os ~5s de roleta visível, e foi o maior gargalo de FPS medido em campo num
-        Pi 3 real; a perda de suavidade não é perceptível num disco girando continuamente."""
+        pra fora da borda esquerda -- só a fatia direita (40%) fica visível. Um único `scale` a
+        partir do ângulo pré-rotacionado mais próximo (ver `_wheel_rotation_frames`), nunca uma
+        rotação em tempo real na resolução final. `scale` (rápido, sem filtro) em vez de
+        `smoothscale` (bilinear) de propósito -- perda de suavidade não perceptível num disco
+        girando continuamente.
+
+        O resultado de cada `scale` fica num cache LRU pequeno (`_WHEEL_SCALED_CACHE_MAX`
+        quadros -- não os 48 inteiros: a 1152px de diâmetro isso passaria de 240MB, memória
+        demais pra um Pi 3 com 1GB de RAM no total). Durante o giro rápido os 48 ângulos se
+        alternam demais pra caber todos no cache (poucos acertos aí, cada quadro é mesmo
+        recalculado), mas nos ~2s finais de desaceleração -- quando o ângulo quase para de mudar
+        de frame a frame -- o mesmo punhado de quadros se repete bastante, e aí o cache elimina o
+        `scale` desses quadros quase inteiramente."""
         theme = self.theme
         diameter = round(theme.height * 0.6)
         frames = self._wheel_rotation_frames()
         step_deg = 360 / len(frames)
         idx = round(self._reveal_wheel_angle(elapsed) / step_deg) % len(frames)
-        frame = pygame.transform.scale(frames[idx], (diameter, diameter))
+
+        cache = self._wheel_scaled_cache
+        cache_key = (idx, diameter)
+        scaled = cache.pop(cache_key, None)
+        if scaled is None:
+            scaled = pygame.transform.scale(frames[idx], (diameter, diameter))
+            if len(cache) >= _WHEEL_SCALED_CACHE_MAX:
+                cache.popitem(last=False)  # descarta o mais antigo (LRU)
+        cache[cache_key] = scaled  # reinsere no fim -- marca como usado mais recentemente
+
         cy = theme.height / 2
         cx = -0.10 * diameter
-        surface.blit(frame, frame.get_rect(center=(round(cx), round(cy))))
+        surface.blit(scaled, scaled.get_rect(center=(round(cx), round(cy))))
 
     def _reveal_gradient(self) -> pygame.Surface:
         """70% escuro -> 0% escuro, esquerda -> centro da tela (metade esquerda, onde a roleta
