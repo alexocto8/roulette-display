@@ -41,7 +41,7 @@ from app.services.retention_service import RetentionService
 from app.services.spin_service import DisplayState, SpinService
 from app.ui import sound
 from app.ui.admin import AdminPanel
-from app.ui.animation import Tween, ease_out_back, ease_out_cubic
+from app.ui.animation import Tween, ease_out_cubic
 from app.ui.assets import UiAssets, load_image
 from app.ui.rotation import create_screen
 from app.ui.splash import show_splash
@@ -275,6 +275,13 @@ class RouletteDisplay:
         # memória em cima do custo de desenhar, outro gargalo real medido num Pi 3.
         self._reveal_layer_surface: pygame.Surface | None = None
         self._reveal_crossfade_surface: pygame.Surface | None = None
+        # Aro+número da revelação, compostos numa única surface e cacheados por (número, cor) --
+        # ver `_draw_reveal_badge`: o "pulse" (respiração do badge) reescalava o aro e recriava a
+        # fonte a cada frame porque o tamanho-alvo variava continuamente, invalidando os caches
+        # de `UiAssets`/`Theme.font` a cada frame -- o maior gargalo de FPS real medido num Pi 3
+        # (pior que o da roleta). Agora o tamanho é fixo; só muda quando o NÚMERO muda.
+        self._reveal_badge_cache: pygame.Surface | None = None
+        self._reveal_badge_cache_key: tuple[int, str] | None = None
 
         self.input_buffer = ""
         self.pending_undo = False
@@ -307,6 +314,12 @@ class RouletteDisplay:
         # frame no Pi 3.
         self._rect_shadow_cache: dict[tuple[int, int, int], pygame.Surface] = {}
         self._glow_cache: dict[int, pygame.Surface] = {}
+        # Aro+número do círculo "ÚLTIMO RESULTADO" (tela principal), cacheados por (número, cor)
+        # -- mesmo motivo do cache da revelação (`_reveal_badge_cache`): o "pop" de entrada não
+        # pode mais variar o tamanho-alvo do aro/fonte a cada frame (invalidava os caches de
+        # `UiAssets`/`Theme.font`).
+        self._center_badge_cache: pygame.Surface | None = None
+        self._center_badge_cache_key: tuple[int, str] | None = None
 
         # Fundo em degradê (mesmo asset `card_gradient.png`) recortado numa máscara arredondada --
         # usado por praticamente todo cartão/badge/painel/pill da tela nova. Cacheado pelo
@@ -1002,17 +1015,17 @@ class RouletteDisplay:
         badge_asset = {"red": "result_badge_red.png", "black": "result_badge_black.png",
                        "green": "result_badge_green.png"}[last_color]
 
-        # "Pop" sutil ao trocar de resultado (ease-out com leve overshoot) -- só o TAMANHO
-        # VISUAL do aro/número escala; a posição (cy/tag_y, calculada a partir do diâmetro BASE)
-        # fica parada, senão o histórico abaixo pularia de lugar a cada giro.
+        # "Pop" sutil ao trocar de resultado (ease-out com leve overshoot) -- só o GLOW (alpha,
+        # barato) acompanha a curva de entrada; o aro+número em si tem tamanho FIXO, cacheado uma
+        # única vez por (número, cor). Antes, o tamanho do aro/fonte seguia `pop_scale` (que varia
+        # a cada frame durante os ~380ms do pop) -- mesma classe de bug de desempenho encontrada
+        # na revelação (`_draw_reveal_badge`): tamanho-alvo mudando todo frame invalida o cache de
+        # `UiAssets`/`Theme.font`, forçando um smoothscale + uma fonte nova a cada frame.
         elapsed = now - self.number_anim_start
         t = min(1.0, elapsed / _NUMBER_POP_MS) if elapsed >= 0 else 1.0
-        pop = ease_out_back(t) if elapsed < _NUMBER_POP_MS else 1.0
-        pop_scale = 0.88 + 0.12 * pop
 
         base_diameter = min(int(rect.width * 0.86), int(theme.px(380)))
-        badge_diameter = round(base_diameter * pop_scale)
-        badge_size = int(badge_diameter * 1.60)  # o PNG já inclui a margem do halo dourado
+        badge_size = int(base_diameter * 1.60)  # o PNG já inclui a margem do halo dourado
         cx = rect.centerx
         cy = title_r.bottom + theme.px(34) + int(base_diameter * 0.60)
 
@@ -1024,11 +1037,18 @@ class RouletteDisplay:
                 glow.set_alpha(glow_alpha)
                 surface.blit(glow, (cx - glow_r, cy - glow_r))
 
-        badge = self.ui_assets.scaled(badge_asset, (badge_size, badge_size))
-        surface.blit(badge, (cx - badge_size // 2, cy - badge_size // 2))
-
-        num_font = theme.font(int(badge_diameter * 0.76), bold=True)
-        _blit_outlined_text(surface, num_font, str(last.number), (cx, cy), fill=OFF_WHITE, outline=BLACK, outline_px=0)
+        badge_key = (last.number, last_color)
+        badge_layer = self._center_badge_cache
+        if badge_layer is None or self._center_badge_cache_key != badge_key:
+            badge_layer = pygame.Surface((badge_size, badge_size), pygame.SRCALPHA)
+            badge = self.ui_assets.scaled(badge_asset, (badge_size, badge_size))
+            badge_layer.blit(badge, (0, 0))
+            num_font = theme.font(int(badge_size / 1.60 * 0.76), bold=True)
+            _blit_outlined_text(badge_layer, num_font, str(last.number), (badge_size // 2, badge_size // 2),
+                                 fill=OFF_WHITE, outline=BLACK, outline_px=0)
+            self._center_badge_cache = badge_layer
+            self._center_badge_cache_key = badge_key
+        surface.blit(badge_layer, (cx - badge_size // 2, cy - badge_size // 2))
 
         # O aro dourado se estende bem além do círculo preenchido (halo/bisel do asset) -- a
         # folga é medida a partir de ~0.60*diâmetro (a borda externa visível do aro), não da
@@ -1341,13 +1361,20 @@ class RouletteDisplay:
         self._reveal_gradient_cache = grad
         return grad
 
-    def _draw_reveal_badge(self, surface: pygame.Surface, pulse_scale: float, glow_t: float) -> None:
+    def _draw_reveal_badge(self, surface: pygame.Surface, _pulse_scale: float, glow_t: float) -> None:
         """Círculo/aro IGUAIS ao "ÚLTIMO RESULTADO" da tela principal (mesmo asset
         `result_badge_*.png`) -- mantém o padrão visual entre as duas telas. Número dimensionado
         pra caber DENTRO do círculo (mesma proporção `diâmetro * 0.76` do painel principal), sem
-        exceder. Centralizado na tela (vertical e horizontal), badges empilhados embaixo. Durante
-        a janela de exibição, `pulse_scale`/`glow_t` fazem o conjunto respirar (fora dela vêm
-        neutros e não mudam nada)."""
+        exceder. Centralizado na tela (vertical e horizontal), badges empilhados embaixo.
+
+        Aro+número são desenhados em TAMANHO FIXO, cacheados uma única vez por (número, cor) --
+        `pulse_scale` deixou de reescalar essa geometria (bug de desempenho real encontrado em
+        campo num Pi 3: como `pulse_scale` varia continuamente, o tamanho-alvo do aro/glow/fonte
+        mudava quase a cada frame, o que invalidava o cache de `UiAssets.scaled` e o de fontes
+        -- resultado: um `smoothscale` cheio do aro E a criação de uma `pygame.font.Font` nova
+        num tamanho enorme, TODO frame, durante os ~5s de número exibido -- o gargalo real,
+        maior que o da roleta). `glow_t` continua fazendo o glow dourado "respirar" -- isso é só
+        alpha (`set_alpha`), barato, sem re-renderizar nada."""
         theme = self.theme
         number = self.reveal_number
         color = self.reveal_color
@@ -1356,8 +1383,7 @@ class RouletteDisplay:
                        "green": "result_badge_green.png"}[color]
 
         base_diameter = theme.px(900)  # era 520 no badge antigo -- +73%, acima do mínimo de +70% pedido
-        diameter = round(base_diameter * pulse_scale)
-        badge_size = int(diameter * 1.60)
+        badge_size = int(base_diameter * 1.60)
         cx, cy = theme.width // 2, theme.height // 2
 
         glow_size = int(base_diameter * 2.2)
@@ -1365,16 +1391,23 @@ class RouletteDisplay:
         surface.blit(glow, (cx - glow_size // 2, cy - glow_size // 2))
 
         if glow_t > 0:
-            pulse_glow_size = int(diameter * 1.30)
+            pulse_glow_size = int(base_diameter * 1.30)
             pulse_glow = self.ui_assets.scaled("pulse_glow_gold.png", (pulse_glow_size, pulse_glow_size))
             pulse_glow.set_alpha(int(70 + 160 * glow_t))
             surface.blit(pulse_glow, (cx - pulse_glow_size // 2, cy - pulse_glow_size // 2))
 
-        badge = self.ui_assets.scaled(badge_asset, (badge_size, badge_size))
-        surface.blit(badge, (cx - badge_size // 2, cy - badge_size // 2))
-
-        num_font = theme.font(int(diameter * 0.76), bold=True)
-        _blit_outlined_text(surface, num_font, str(number), (cx, cy), fill=OFF_WHITE, outline=BLACK, outline_px=0)
+        badge_key = (number, color)
+        badge_layer = self._reveal_badge_cache
+        if badge_layer is None or self._reveal_badge_cache_key != badge_key:
+            badge_layer = pygame.Surface((badge_size, badge_size), pygame.SRCALPHA)
+            badge = self.ui_assets.scaled(badge_asset, (badge_size, badge_size))
+            badge_layer.blit(badge, (0, 0))
+            num_font = theme.font(int(badge_size / 1.60 * 0.76), bold=True)
+            _blit_outlined_text(badge_layer, num_font, str(number), (badge_size // 2, badge_size // 2),
+                                 fill=OFF_WHITE, outline=BLACK, outline_px=0)
+            self._reveal_badge_cache = badge_layer
+            self._reveal_badge_cache_key = badge_key
+        surface.blit(badge_layer, (cx - badge_size // 2, cy - badge_size // 2))
 
         tags = self._reveal_tags(number, color)
         pill_font = theme.font(30, bold=True)

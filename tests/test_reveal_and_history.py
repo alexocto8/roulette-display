@@ -247,6 +247,13 @@ def test_last_number_numeral_is_off_white_regardless_of_color(display):
     for number, color in ((5, "red"), (17, "black"), (0, "green")):
         register(display, number)
         display.reveal_number = None  # placar normal, não a revelação
+        # `register` (via `_confirm_input` -> `_capture_main_screen`) já desenhou o círculo real
+        # uma vez pra capturar o pano de fundo da revelação -- isso aquece o cache do aro/número
+        # (ver `_draw_center`/`_reveal_badge_cache`... aqui é `_center_badge_cache`). Reseta antes
+        # de espiar pra garantir que a chamada COM cache frio (a que este teste quer verificar)
+        # realmente aconteça.
+        display._center_badge_cache = None
+        display._center_badge_cache_key = None
 
         calls = []
 
@@ -288,6 +295,11 @@ def test_history_rows_are_newest_first_and_use_one_lane_per_row(display):
     for n in (5, 17, 0, 22):  # vermelho, preto, verde, preto -- registrados nesta ordem
         register(display, n)
     display.reveal_number = None
+    # `register` já desenhou o círculo real uma vez por giro (ver comentário equivalente em
+    # test_last_number_numeral_is_off_white_regardless_of_color) -- reseta o cache do
+    # aro/número pra garantir que a chamada espiada abaixo, com cache frio, realmente aconteça.
+    display._center_badge_cache = None
+    display._center_badge_cache_key = None
 
     calls = []
 
