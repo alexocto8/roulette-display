@@ -56,6 +56,17 @@ if [[ ! -f "${REPO_DIR}/config.yaml" ]]; then
     echo "==> config.yaml não encontrado, será criado com valores padrão na primeira execução."
 fi
 
+# config.yaml é versionado (serve de template inicial), mas cada mesa reescreve o próprio
+# arquivo em campo -- pelo menu admin (girar tela, nome do cassino, PIN etc.) ou por
+# app/config.py:save_config(). Sem isso, qualquer atualização futura do repositório que
+# toque config.yaml quebra "git pull" com "Your local changes... would be overwritten by
+# merge" em toda mesa já instalada (bug real visto em campo). skip-worktree diz pro git
+# ignorar esse arquivo específico em pulls/checkouts dali em diante -- as mudanças locais
+# do operador nunca mais são tocadas, e o repositório segue livre pra evoluir o template
+# pra instalações novas.
+echo "==> Protegendo config.yaml de sobrescritas por 'git pull' (git update-index --skip-worktree)..."
+git -C "${REPO_DIR}" update-index --skip-worktree config.yaml || true
+
 echo "==> Instalando serviço systemd..."
 sed "s#__INSTALL_DIR__#${REPO_DIR}#g" "${REPO_DIR}/systemd/roulette-display.service" \
     > /etc/systemd/system/roulette-display.service

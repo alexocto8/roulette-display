@@ -143,6 +143,19 @@ Também editável em `Personalização/Identificação > Girar tela` no menu adm
   mesmo (padrão do `roulette-display.service`); o app já tenta abrir a tela com `vsync=1` e tem
   retry automático pra falhas passageiras do driver logo após um restart — não precisa mexer
   nisso manualmente.
+- **`git pull` recusa com "Your local changes to the following files would be overwritten by
+  merge: config.yaml"**: normal em mesas já em uso — `config.yaml` é reescrito pelo próprio
+  painel (menu admin: girar tela, nome do cassino, PIN etc.), então diverge do repositório.
+  Instalações feitas com a versão atual do `install.sh` já protegem esse arquivo
+  automaticamente (`git update-index --skip-worktree config.yaml`); numa mesa mais antiga,
+  rode uma vez, via SSH/console:
+  ```bash
+  cd ~/roulette-display
+  git update-index --skip-worktree config.yaml
+  git pull --ff-only
+  ```
+  Isso preserva as configurações locais e resolve o problema definitivamente — `git pull` nunca
+  mais tenta tocar em `config.yaml` nessa mesa, mesmo que o template do repositório mude.
 - **Teclado numérico não responde**: confirme que o usuário do serviço tem acesso a
   `/dev/input/event*` (grupo `input`) — com o serviço rodando como `root` (padrão) isso nunca é
   problema.
