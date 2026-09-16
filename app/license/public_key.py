@@ -7,7 +7,7 @@ why that's a rare, deliberate, all-hardware-affecting event) — copy the new
 """
 from __future__ import annotations
 
-PUBLIC_KEY_HEX = "95c7f0d9ebe298e43474b6fa00a62925d2fb68fd0ff5b5958a7b76d3375221d0"
+PUBLIC_KEY_HEX = "7e64eabbd9b6a8191a88176ce1a291260716b5627aae83ec4419dc2efa25fa9a"
 
 
 def public_key_bytes() -> bytes:
